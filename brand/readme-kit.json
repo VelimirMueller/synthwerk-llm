@@ -148,6 +148,247 @@
           "state": "ok"
         }
       ]
+    },
+    {
+      "key": "lead",
+      "type": "lead",
+      "title": "ABOUT",
+      "text": "**synthwerk-llm** is the LLM gateway for the Synthwerk family. One API for chat and text tasks, scoped access, audited streaming. This repo is being rewritten. There is no code on main. It is very good at waiting."
+    },
+    {
+      "key": "what",
+      "type": "notes",
+      "title": "THE SHORT VERSION",
+      "columns": 3,
+      "items": [
+        {
+          "lead": "One API",
+          "text": "Chat and text tasks. The provider is chosen by env: Ollama in dev, Anthropic or any provider in prod."
+        },
+        {
+          "lead": "Streamed and audited",
+          "text": "Tokens stream over SSE. Every answer and tool call is audited."
+        },
+        {
+          "lead": "Scoped on the token",
+          "text": "Scopes are platform-admin, tenant and user. The service enforces the scope on the token, never the prompt."
+        }
+      ]
+    },
+    {
+      "key": "startnotes",
+      "type": "notes",
+      "title": "BEFORE YOU CLONE",
+      "columns": 3,
+      "items": [
+        {
+          "lead": "No code on main",
+          "text": "There is no code to run on main yet. Tag `legacy-final` holds the old demo."
+        },
+        {
+          "lead": "Ecosystem map",
+          "text": "The ecosystem map is in [synthwerk](https://github.com/VelimirMueller/synthwerk)."
+        },
+        {
+          "lead": "Blueprint",
+          "text": "Shared CI, lint configs and templates come from [synthwerk-blueprint](https://github.com/VelimirMueller/synthwerk-blueprint)."
+        }
+      ]
+    },
+    {
+      "key": "hownotes",
+      "type": "notes",
+      "title": "IN AND OUT",
+      "columns": 2,
+      "items": [
+        {
+          "lead": "Clients in",
+          "text": "synthwerk-widgets and SDK apps call the gateway over HTTP."
+        },
+        {
+          "lead": "Provider out",
+          "text": "The gateway forwards to Ollama, Anthropic or another provider, chosen by env."
+        },
+        {
+          "lead": "Read-only MCP",
+          "text": "The gateway reads the other services through read-only MCP tools. It never writes."
+        },
+        {
+          "lead": "Events out",
+          "text": "Facts go to the NATS bus as events."
+        }
+      ]
+    },
+    {
+      "key": "branching",
+      "type": "flow",
+      "title": "BRANCHING · TRUNK-BASED",
+      "nodes": [
+        {
+          "title": "FEAT/*",
+          "sub": "Opens a PR. Checks run."
+        },
+        {
+          "title": "MAIN",
+          "sub": "Deploys to dev, auto.",
+          "hot": true
+        },
+        {
+          "title": "DEV",
+          "sub": "A vX.Y.Z tag goes to stg."
+        },
+        {
+          "title": "STG",
+          "sub": "Manual approval to prd."
+        },
+        {
+          "title": "PRD",
+          "sub": "Runs the approved digest."
+        }
+      ],
+      "caption": "Trunk-based. No env branches. The digest is promoted by approval."
+    },
+    {
+      "key": "usage",
+      "type": "notes",
+      "title": "THE REFERENCE",
+      "columns": 2,
+      "items": [
+        {
+          "lead": "Scopes",
+          "text": "platform-admin, tenant, user. Enforced on the token, never the prompt."
+        },
+        {
+          "lead": "Where it fits",
+          "text": "synthwerk-widgets and SDK apps call the gateway. It reads service tools through read-only MCP tools and publishes events to the NATS bus."
+        },
+        {
+          "lead": "Ecosystem",
+          "text": "Ecosystem map: [synthwerk](https://github.com/VelimirMueller/synthwerk). Shared CI: [synthwerk-blueprint](https://github.com/VelimirMueller/synthwerk-blueprint)."
+        },
+        {
+          "lead": "The old code",
+          "text": "Tag `legacy-final` holds a Flask + GPT4All WebSocket demo, one shared session for all users."
+        },
+        {
+          "lead": "Renamed",
+          "text": "This repo was renamed. The old URL still redirects here."
+        },
+        {
+          "lead": "Branching",
+          "text": "`main` deploys to dev, a `vX.Y.Z` tag to stg, an approved digest to prd."
+        }
+      ]
+    },
+    {
+      "key": "honest",
+      "type": "notes",
+      "title": "TESTS, CHANGELOG, STACK",
+      "columns": 3,
+      "items": [
+        {
+          "lead": "Tests",
+          "text": "There are no tests. There is no code to test."
+        },
+        {
+          "lead": "Changelog",
+          "text": "There is no CHANGELOG yet."
+        },
+        {
+          "lead": "Stack",
+          "text": "Go 1.27. Licensed under MIT."
+        }
+      ]
+    },
+    {
+      "key": "links",
+      "type": "buttons",
+      "items": [
+        {
+          "label": "synthwerk",
+          "sub": "ecosystem map",
+          "href": "https://github.com/VelimirMueller/synthwerk"
+        },
+        {
+          "label": "Blueprint",
+          "sub": "shared CI, lint, templates",
+          "href": "https://github.com/VelimirMueller/synthwerk-blueprint"
+        },
+        {
+          "label": "legacy-final",
+          "sub": "old Flask + GPT4All demo",
+          "href": "https://github.com/VelimirMueller/synthwerk-llm/tree/legacy-final"
+        },
+        {
+          "label": "License",
+          "sub": "MIT",
+          "href": "LICENSE"
+        },
+        {
+          "label": "VM. flagship",
+          "sub": "github.com/VelimirMueller",
+          "href": "https://github.com/VelimirMueller"
+        },
+        {
+          "label": "Plain text",
+          "sub": "show copyable commands"
+        }
+      ]
+    },
+    {
+      "key": "footer",
+      "type": "footer",
+      "studio": "VM. studio / flagship",
+      "text": "open source · look per vm-brand playbook · MIT © 2026 Velimir Mueller",
+      "eof": "-- EOF -- no code. yet. --"
     }
-  ]
+  ],
+  "readme": {
+    "hero_alt": "SYNTHWERK-LLM. LLM gateway. Local models in dev, any provider in prod. Scoped, audited SSE streaming. Rewrite.",
+    "items": [
+      "lead",
+      "stats",
+      "divider:what",
+      "features",
+      "what",
+      "divider:start",
+      "start",
+      {
+        "details": "links",
+        "chip": 6,
+        "code": [
+          [
+            "bash",
+            "gh repo clone VelimirMueller/synthwerk-llm\ncd synthwerk-llm\ngit checkout legacy-final   # the old Flask + GPT4All WebSocket demo"
+          ]
+        ]
+      },
+      "startnotes",
+      {
+        "buttons": "links",
+        "only": [
+          1,
+          2,
+          3
+        ]
+      },
+      "divider:how",
+      "flow",
+      "hownotes",
+      "branching",
+      "divider:usage",
+      "usage",
+      "divider:status",
+      "status",
+      "honest",
+      {
+        "buttons": "links",
+        "only": [
+          4,
+          5
+        ]
+      },
+      "footer"
+    ]
+  }
 }
