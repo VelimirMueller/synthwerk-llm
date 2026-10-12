@@ -2,3 +2,4 @@
 # Not human-reviewable as text: diff them as binary, collapse them on GitHub.
 assets/banner/*.svg -diff linguist-generated=true
 assets/readme/*.svg -diff linguist-generated=true
+assets/**/*.svg binary
