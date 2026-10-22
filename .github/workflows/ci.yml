@@ -1,0 +1,41 @@
+# Checks for the docs-only skeleton (S-E0): no source code yet, so CI checks
+# what the repo holds — JSON config, the generated SVG art and the README links.
+# Replace with a thin caller of the synthwerk blueprint when the rewrite lands code.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: JSON is valid
+        run: git ls-files -z '*.json' | xargs -0 -r -n1 jq empty
+      - name: SVG is well-formed XML
+        run: git ls-files -z '*.svg' | xargs -0 -r python3 -c 'import sys, xml.etree.ElementTree as ET; [ET.parse(p) for p in sys.argv[1:]]'
+      - name: README links to files that exist
+        run: |
+          missing=0
+          while read -r ref; do
+            [[ -e "$ref" ]] || { echo "::error file=README.md::missing file: $ref"; missing=1; }
+          done < <(grep -oE '(src|srcset|href)="[^"#:]+"' README.md | sed -E 's/^[a-z]+="(.*)"$/\1/' | sort -u)
+          exit "$missing"
