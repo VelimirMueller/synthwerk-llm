@@ -1,0 +1,8 @@
+# zizmor policy: third-party actions must be pinned by commit SHA.
+# First-party blueprint refs use the moving major tag (spec Q-B1: @v1).
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "VelimirMueller/synthwerk-blueprint/*": ref-pin
+        "*": hash-pin
