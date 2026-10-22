@@ -9,12 +9,14 @@ import (
 
 // Migrate applies the SQL migrations embedded at build time.
 func (a *App) Migrate(ctx context.Context) error {
-	data, err := migrations.FS.ReadFile("0001_init.sql")
+	all, err := migrations.All()
 	if err != nil {
-		return fmt.Errorf("app: migrate: read: %w", err)
-	}
-	if _, err := a.DB.Exec(ctx, string(data)); err != nil {
 		return fmt.Errorf("app: migrate: %w", err)
+	}
+	for _, sql := range all {
+		if _, err := a.DB.Exec(ctx, sql); err != nil {
+			return fmt.Errorf("app: migrate: %w", err)
+		}
 	}
 	return nil
 }
