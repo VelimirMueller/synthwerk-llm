@@ -87,9 +87,15 @@ func run(ctx context.Context) error {
 	if dbURL == "" {
 		return errors.New(env.Key(app.Service, "DATABASE_URL") + " is not set")
 	}
-	db, err := pgxpool.New(ctx, dbURL)
+	poolCfg, err := pgxpool.ParseConfig(dbURL)
 	if err != nil {
 		return errors.New("database url does not parse") // the error text may hold the password
+	}
+	// The kit outbox uses the unqualified table name; it must resolve to llm.synthwerk_outbox.
+	poolCfg.ConnConfig.RuntimeParams["search_path"] = "llm"
+	db, err := pgxpool.NewWithConfig(ctx, poolCfg)
+	if err != nil {
+		return errors.New("database pool does not start")
 	}
 	defer db.Close()
 

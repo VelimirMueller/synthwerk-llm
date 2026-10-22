@@ -22,7 +22,7 @@ func (f fakeDB) Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 
 func do(t *testing.T, h http.Handler, target string) int {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec.Code

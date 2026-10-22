@@ -10,5 +10,5 @@ CREATE TABLE IF NOT EXISTS llm.synthwerk_outbox (
     last_error    text
 );
 
-CREATE INDEX IF NOT EXISTS llm.synthwerk_outbox_unpublished
+CREATE INDEX IF NOT EXISTS synthwerk_outbox_unpublished
     ON llm.synthwerk_outbox (created_at, id) WHERE published_at IS NULL;
