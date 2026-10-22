@@ -76,6 +76,32 @@ git checkout legacy-final   # the old Flask + GPT4All WebSocket demo
 <a href="https://github.com/VelimirMueller/synthwerk-llm/tree/legacy-final"><picture><source media="(prefers-color-scheme: light)" srcset="assets/readme/links-3-v2-light.svg"><img alt="legacy-final (https://github.com/VelimirMueller/synthwerk-llm/tree/legacy-final)" src="assets/readme/links-3-v2-dark.svg" width="32%"></picture></a>
 </p>
 
+## Run locally
+
+```bash
+just test
+```
+
+The service reads its configuration from the environment:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SYNTHWERK_PLATFORM_ENV` | `local` | `local`, `ci`, `dev`, `stg`, `prd` |
+| `SYNTHWERK_LLM_HTTP_ADDR` | `:8080` | Listen address |
+| `SYNTHWERK_LLM_DATABASE_URL` | — | Postgres URL (required) |
+| `SYNTHWERK_LLM_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN`, `ERROR` |
+| `SYNTHWERK_LLM_LOG_FORMAT` | `json` | `json` or `console` (local only) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP gRPC collector. Unset = no export |
+
+Start it against a running Postgres:
+
+```bash
+export SYNTHWERK_LLM_DATABASE_URL=postgres://user:pass@127.0.0.1:5432/llm
+go run ./cmd/llm
+```
+
+`GET /healthz` is the liveness probe; `GET /readyz` is the readiness probe and pings Postgres.
+
 <br>
 
 <p>

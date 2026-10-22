@@ -1,0 +1,39 @@
+# golangci-lint v2 config for synthwerk-* Go repos.
+# Copy to the repo root as .golangci.yml. Source: synthwerk-blueprint/configs/go.
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - contextcheck
+    - errorlint
+    - exhaustive
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - revive
+    - sloglint
+    - sqlclosecheck
+    - unparam
+    - usestdlibvars
+  exclusions:
+    generated: strict
+    presets:
+      - comments
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/VelimirMueller/synthwerk-
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
