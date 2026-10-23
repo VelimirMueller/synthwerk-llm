@@ -1,6 +1,9 @@
 // Command llm is the LLM gateway for the Synthwerk family. This is the service
 // scaffold: health probes, logging and telemetry, no business logic yet.
 //
+//	llm              run the service
+//	llm healthcheck  exit 0 when /readyz answers 200 (container health check)
+//
 // Environment:
 //
 //	SYNTHWERK_PLATFORM_ENV         local (default), ci, dev, stg, prd
@@ -18,7 +21,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -42,6 +47,13 @@ var (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		if err := healthcheck(env.Get(app.Service, "HTTP_ADDR", ":8080")); err != nil {
+			fmt.Fprintln(os.Stderr, "healthcheck:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := start(); err != nil {
 		slog.Error("service stopped", slog.String("event.name", "service.failed"), slog.String("exception.message", err.Error()))
 		os.Exit(1)
@@ -133,4 +145,27 @@ func run(ctx context.Context) error {
 		return srv.Shutdown(sctx)
 	})
 	return g.Wait()
+}
+
+func healthcheck(addr string) error {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("address %q: %w", addr, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	url := "http://" + net.JoinHostPort("127.0.0.1", port) + "/readyz"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("readyz: status %d", res.StatusCode)
+	}
+	return nil
 }
