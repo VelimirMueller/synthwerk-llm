@@ -39,5 +39,5 @@ eval set="evals/chat/v1":
 
 # Recompute MANIFEST.json after a change to cases.jsonl (bump the version too).
 eval-manifest set="evals/chat/v1":
-    jq --arg sha "$(shasum -a 256 {{ set }}/cases.jsonl | cut -d' ' -f1)" --argjson n "$(grep -c . {{ set }}/cases.jsonl)" '.sha256 = $sha | .cases = $n' {{ set }}/MANIFEST.json > {{ set }}/MANIFEST.json.tmp
+    jq --arg sha "$(shasum -a 256 {{ set }}/cases.jsonl | cut -d' ' -f1)" --argjson n "$(grep -c '[^[:space:]]' {{ set }}/cases.jsonl)" '.sha256 = $sha | .cases = $n' {{ set }}/MANIFEST.json > {{ set }}/MANIFEST.json.tmp
     mv {{ set }}/MANIFEST.json.tmp {{ set }}/MANIFEST.json

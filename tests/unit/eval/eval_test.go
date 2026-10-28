@@ -204,6 +204,9 @@ func oracleProvider(t *testing.T, s *eval.Set) *fake.Provider {
 	for _, c := range s.Cases {
 		byPrompt[c.Messages[len(c.Messages)-1].Content] = oracle[c.ID]
 	}
+	if len(byPrompt) != len(s.Cases) {
+		t.Fatalf("%d distinct last prompts for %d cases: the oracle cannot tell them apart", len(byPrompt), len(s.Cases))
+	}
 	return &fake.Provider{Reply: func(req provider.Request) []string {
 		return []string{byPrompt[req.Messages[len(req.Messages)-1].Text]}
 	}}

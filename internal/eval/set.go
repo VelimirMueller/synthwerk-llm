@@ -108,6 +108,11 @@ func Load(dir string) (*Set, error) {
 	if err := s.Thresholds.validate(); err != nil {
 		return nil, err
 	}
+	for cat := range s.Thresholds.MinCategory {
+		if !slices.ContainsFunc(s.Cases, func(c Case) bool { return c.Category == cat }) {
+			return nil, fmt.Errorf("eval: thresholds.json has a floor for %q, but no case has that category", cat)
+		}
+	}
 	var b Baseline
 	switch err := readJSON(filepath.Join(dir, "baseline.json"), &b); {
 	case err == nil:

@@ -32,7 +32,8 @@ defaults:
     shell: bash --noprofile --norc -euo pipefail {0}
 
 env:
-  # Same pin as synthwerk-infra/compose.yaml (service ollama). Bump both together.
+  # Same pin as synthwerk-infra/compose.yaml (service ollama). Bump both together,
+  # and the version in the cache keys below.
   OLLAMA_IMAGE: ollama/ollama:0.40.1@sha256:69f27594d8127cb43db1edcafa5e2d3cd8f88bdbc54a2cf3ceb11b8d138a24b1
   EVAL_SET: evals/chat/v1
 
@@ -106,7 +107,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.MODELS_DIR }}
-          key: ollama-models-${{ steps.model.outputs.name }}
+          key: ollama-models-0.40.1-${{ steps.model.outputs.name }}
       - name: Start Ollama
         run: |
           mkdir -p "$MODELS_DIR"
@@ -130,7 +131,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.MODELS_DIR }}
-          key: ollama-models-${{ steps.model.outputs.name }}
+          key: ollama-models-0.40.1-${{ steps.model.outputs.name }}
       - name: Run the eval
         run: |
           echo "Ollama image: \`$OLLAMA_IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
