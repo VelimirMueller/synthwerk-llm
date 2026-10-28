@@ -1,5 +1,5 @@
 // Eval harness (#72): checks, set loading, the gate and the runner with the fake
-// provider. No model: the real eval runs in .github/workflows/eval.yml.
+// provider. No model: the real eval runs in the eval job of .github/workflows/ci.yml.
 package eval_test
 
 import (

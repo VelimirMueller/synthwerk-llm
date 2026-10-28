@@ -1,6 +1,7 @@
-# Fleet standard ci.yml (fleet-standard templates/deploys/public) plus the integration job: the chat
-# slice against real Postgres (row level security) and NATS (testcontainers). The integration job is an
-# exception (fleet.yml WF-NAME-02): the unit stage runs without network services (CI-UNIT-05).
+# Fleet standard ci.yml (fleet-standard templates/deploys/public) plus two extra jobs: integration
+# (the chat slice against real Postgres with row level security and NATS, testcontainers) and eval
+# (the alias "default" scored on a real model). Both are exceptions (fleet.yml WF-NAME-02): the unit
+# stage runs without network services (CI-UNIT-05), and no fleet stage runs a model eval.
 # The image is published only by deploy.yml. Required check for the rulesets: "conclusion".
 # No push trigger (CI-COST-05): a change reaches main through a PR run of this workflow.
 name: ci
@@ -15,6 +16,10 @@ on:
         description: Run the e2e stage
         type: boolean
         default: false
+      aliases:
+        description: "SYNTHWERK_LLM_MODEL_ALIASES for the eval job, for example default=qwen3.5:2b. Empty: the code default."
+        type: string
+        default: ""
 
 permissions: {}
 
@@ -71,10 +76,10 @@ jobs:
     with:
       stack: go
       # The tests live in tests/unit and tests/contract, so the coverage counts internal/ (-coverpkg).
-      # Floor 35: these tests cover 40.4 % today; store and the chat HTTP path are tested only by
+      # Floor 50: these tests cover 56.5 % today; store and the chat HTTP path are tested only by
       # the integration job (Postgres, NATS). CI-UNIT-03 wants 80 (fleet.yml exception).
       command: go test -race -covermode=atomic -coverpkg=./internal/... -coverprofile=coverage/cover.out ./tests/unit/... ./tests/contract/...
-      coverage-floor: 35
+      coverage-floor: 50
 
   # e2e runs on dispatch and in promote.yml before stg (CI-E2E-01); a PR runs the same suite
   # in the extra job below. build needs e2e only so a dispatched e2e failure stops the build.
@@ -127,12 +132,121 @@ jobs:
       - name: Run the integration tests
         run: go test -tags integration -race -count=1 ./tests/integration/...
 
+  # Chat eval of the alias "default" (#72): scores the real model on Ollama (CPU, temperature 0,
+  # fixed seed, thinking off) against evals/chat/<version> with deterministic checks only, and fails
+  # below evals/chat/<version>/thresholds.json. Score, gate and speed go to the job summary.
+  # The model runs only when the change touches what the eval scores (step "scope"); a dispatch
+  # always runs it and can score another alias map. The harness itself (checks, gate, runner with
+  # the fake provider) runs in the unit stage (tests/unit/eval).
+  eval:
+    needs: [changes, lint]
+    if: ${{ !failure() && !cancelled() && needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      # Same pin as synthwerk-infra/compose.yaml (service ollama). Bump both together,
+      # and the version in the cache keys below.
+      OLLAMA_IMAGE: ollama/ollama:0.40.1@sha256:69f27594d8127cb43db1edcafa5e2d3cd8f88bdbc54a2cf3ceb11b8d138a24b1
+      EVAL_SET: evals/chat/v1
+      SYNTHWERK_LLM_MODEL_ALIASES: ${{ inputs.aliases }}
+      SYNTHWERK_LLM_BASE_URL: http://localhost:11434/v1
+      # Absolute, without "..": actions/cache refuses relative parts.
+      MODELS_DIR: /home/runner/ollama-models
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check whether the change touches what the eval scores
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT" != "pull_request" ] || [ -z "$PR_BASE" ] || ! git cat-file -e "$PR_BASE^{commit}" 2>/dev/null; then
+            echo "eval=true" >> "$GITHUB_OUTPUT"
+            echo "No pull request base ($EVENT): run the eval."
+            exit 0
+          fi
+          files="$(git diff --name-only "$PR_BASE" HEAD)"
+          if grep -E '^(evals/|internal/eval/|cmd/eval/|internal/provider/|internal/config/|\.github/workflows/ci\.yml$)' <<<"$files"; then
+            echo "eval=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "eval=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing the eval scores changed."
+          fi
+      - name: Install Go
+        if: steps.scope.outputs.eval == 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build the eval
+        if: steps.scope.outputs.eval == 'true'
+        run: go build -o "$RUNNER_TEMP/eval" ./cmd/eval
+      - name: Read the model of the alias "default"
+        id: model
+        if: steps.scope.outputs.eval == 'true'
+        run: |
+          model="$("$RUNNER_TEMP/eval" -print-model)"
+          echo "Alias default -> $model"
+          echo "name=$model" >> "$GITHUB_OUTPUT"
+      - name: Restore the model cache
+        id: cache
+        if: steps.scope.outputs.eval == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.MODELS_DIR }}
+          key: ollama-models-0.40.1-${{ steps.model.outputs.name }}
+      - name: Start Ollama
+        if: steps.scope.outputs.eval == 'true'
+        run: |
+          mkdir -p "$MODELS_DIR"
+          docker run -d --name ollama -p 127.0.0.1:11434:11434 -v "$MODELS_DIR:/root/.ollama" "$OLLAMA_IMAGE"
+          for _ in $(seq 60); do
+            if curl -fsS http://localhost:11434/api/version; then exit 0; fi
+            sleep 1
+          done
+          echo "::error::Ollama did not start"
+          docker logs ollama
+          exit 1
+      - name: Pull the model
+        if: steps.scope.outputs.eval == 'true'
+        env:
+          MODEL: ${{ steps.model.outputs.name }}
+        run: |
+          docker exec ollama ollama pull "$MODEL"
+          # The container writes as root; the cache step reads as the runner user.
+          sudo chmod -R a+rX "$MODELS_DIR"
+      - name: Save the model cache
+        if: steps.scope.outputs.eval == 'true' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.MODELS_DIR }}
+          key: ollama-models-0.40.1-${{ steps.model.outputs.name }}
+      - name: Run the eval
+        if: steps.scope.outputs.eval == 'true'
+        run: |
+          echo "Ollama image: \`$OLLAMA_IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+          "$RUNNER_TEMP/eval" -set "$EVAL_SET" -report "$RUNNER_TEMP/eval-report.json"
+      - name: Upload the eval report
+        if: always() && steps.scope.outputs.eval == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: eval-report
+          path: ${{ runner.temp }}/eval-report.json
+          if-no-files-found: ignore
+          retention-days: 7
+
   # The one required check. `skipped` passes only for e2e (dispatch only) and for a docs-only run
   # (code=false). With code=true every listed stage must be `success`; a skipped one fails here.
   # A failed `changes` job fails the first loop (its result is `failure`), whatever CODE holds.
   # A draft PR skips every job on purpose (CI-COST-10); ready_for_review starts the real run.
   conclusion:
-    needs: [changes, lint, unit, e2e, build, integration]
+    needs: [changes, lint, unit, e2e, build, integration, eval]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -146,12 +260,13 @@ jobs:
           UNIT: ${{ needs.unit.result }}
           BUILD: ${{ needs.build.result }}
           INTEGRATION: ${{ needs.integration.result }}
+          EVAL: ${{ needs.eval.result }}
         run: |
           for r in $RESULTS; do
             case "$r" in success|skipped) ;; *) echo "::error::a job ended as $r"; exit 1 ;; esac
           done
           if [ "$CODE" = "true" ]; then
-            for r in "$LINT" "$UNIT" "$BUILD" "$INTEGRATION"; do
+            for r in "$LINT" "$UNIT" "$BUILD" "$INTEGRATION" "$EVAL"; do
               [ "$r" = "success" ] || { echo "::error::a required stage did not run"; exit 1; }
             done
           fi

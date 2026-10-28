@@ -5,16 +5,16 @@ visibility: public
 exceptions:
   - rule: WF-NAME-02
     value:
-      ci.yml: [integration]
-    reason: The unit stage runs without network services (CI-UNIT-05); the integration job tests the chat slice against real Postgres and NATS on every PR.
+      ci.yml: [integration, eval]
+    reason: The unit stage runs without network services (CI-UNIT-05); the integration job tests the chat slice against real Postgres and NATS on every PR. No fleet stage runs a model eval; the eval job scores the alias default on a real model (Ollama) when a PR touches what it scores.
   - rule: CI-COST-15
-    value: 4
-    reason: The integration job is the fourth PR job; it is the only test against real Postgres and NATS and the repo is public (free minutes).
+    value: 5
+    reason: The integration and eval jobs are the fourth and fifth PR jobs; they are the only tests against real Postgres, NATS and a real model, and the repo is public (free minutes).
     expires: 2027-04-30
   - rule: CI-UNIT-03
     value:
-      lines: 35
-    reason: Unit and contract tests cover 40.4 % of internal/ today; store and the chat HTTP path are tested only by the integration job. ci.yml sets coverage-floor 35; raise it as unit tests land.
+      lines: 50
+    reason: Unit and contract tests cover 56.5 % of internal/ today; store and the chat HTTP path are tested only by the integration job. ci.yml sets coverage-floor 50; raise it as unit tests land.
   - rule: GOV-REPO-01
     value: default-branch-main
     reason: The default branch stays main until the control repo creates develop and stage (fleet-standard#7).
