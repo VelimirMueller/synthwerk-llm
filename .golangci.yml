@@ -24,6 +24,10 @@ linters:
     presets:
       - comments
       - std-error-handling
+    rules:
+      # tests/support/harness closes every response body in t.Cleanup.
+      - path: ^tests/
+        linters: [bodyclose]
 
 formatters:
   enable:

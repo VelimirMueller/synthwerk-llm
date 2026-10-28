@@ -1,0 +1,229 @@
+// Package harness runs the real llm HTTP stack in a test: the app with the token
+// check (fake issuer from kit/auth/authtest), the chat handler, a fake provider that
+// counts its calls, and a log buffer the tests search for leaked text.
+package harness
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/VelimirMueller/synthwerk-contracts/go/kit/auth"
+	"github.com/VelimirMueller/synthwerk-contracts/go/kit/auth/authtest"
+	kitlog "github.com/VelimirMueller/synthwerk-contracts/go/kit/log"
+
+	"github.com/VelimirMueller/synthwerk-llm/internal/app"
+	"github.com/VelimirMueller/synthwerk-llm/internal/chat"
+	"github.com/VelimirMueller/synthwerk-llm/internal/provider"
+	"github.com/VelimirMueller/synthwerk-llm/internal/provider/fake"
+	"github.com/VelimirMueller/synthwerk-llm/tests/support/sse"
+)
+
+// Buffer is a goroutine-safe log sink.
+type Buffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *Buffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+// String returns everything logged so far.
+func (b *Buffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
+}
+
+// NopDB answers the readiness ping and the migrations without a database.
+type NopDB struct{}
+
+// Ping implements app.DB.
+func (NopDB) Ping(context.Context) error { return nil }
+
+// Exec implements app.DB.
+func (NopDB) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, nil
+}
+
+// Options change the defaults of New.
+type Options struct {
+	// DB for the probes and migrations. Nil: NopDB.
+	DB app.DB
+	// Provider. Nil: a fake with no delay (H.Fake).
+	Provider provider.Provider
+	// Chat overrides fields of the default chat config when set.
+	Chat func(*chat.Config)
+}
+
+// H is a running gateway.
+type H struct {
+	Issuer *authtest.Issuer
+	Fake   *fake.Provider
+	Server *httptest.Server
+	Logs   *Buffer
+	App    *app.App
+}
+
+// New starts the gateway on st.
+func New(t *testing.T, st chat.Store, o Options) *H {
+	t.Helper()
+	h := &H{Issuer: authtest.NewIssuer(t), Logs: &Buffer{}}
+	logger, err := kitlog.New(kitlog.Options{ServiceName: "synthwerk-llm", Version: "0.0.0-test", Env: "ci", Level: -4, Format: "json", Writer: h.Logs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := auth.NewVerifier(h.Issuer.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := o.Provider
+	if p == nil {
+		h.Fake = fake.New(0)
+		p = h.Fake
+	} else if f, ok := p.(*fake.Provider); ok {
+		h.Fake = f
+	}
+	cfg := chat.Config{
+		Aliases:             map[string]string{"default": "test-model", "small": "test-small"},
+		DefaultAlias:        "default",
+		SystemPrompt:        "You are a test.",
+		MaxInputChars:       8000,
+		MaxStreamsPerOwner:  2,
+		MaxContextChars:     24000,
+		StreamTimeout:       30 * time.Second,
+		ProviderConcurrency: 4,
+		QueueTimeout:        2 * time.Second,
+		Source:              "/synthwerk/llm/local",
+	}
+	if o.Chat != nil {
+		o.Chat(&cfg)
+	}
+	db := o.DB
+	if db == nil {
+		db = NopDB{}
+	}
+	h.App, err = app.New(app.Deps{DB: db, Log: logger, Chat: chat.New(cfg, st, p, nil, logger), Verifier: v}, app.Config{Version: "0.0.0", Commit: "0000000", Env: "ci"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.App.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	h.App.Health.MarkStarted()
+	h.Server = httptest.NewServer(h.App.Handler())
+	t.Cleanup(h.Server.Close)
+	return h
+}
+
+// Token mints a user token for sub in org.
+func (h *H) Token(t *testing.T, sub, org string) string {
+	t.Helper()
+	return h.Issuer.Mint(t, authtest.Claims(sub, org, auth.RoleMember))
+}
+
+// Do sends a request bound to the test. token "" sends none. body nil sends none.
+func (h *H) Do(t *testing.T, method, path, token string, body any, header ...string) *http.Response {
+	t.Helper()
+	return h.DoCtx(t.Context(), t, method, path, token, body, header...)
+}
+
+// DoCtx is Do with its own context, for example to abort a stream.
+func (h *H) DoCtx(ctx context.Context, t *testing.T, method, path, token string, body any, header ...string) *http.Response {
+	t.Helper()
+	var r io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, h.Server.URL+path, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for i := 0; i+1 < len(header); i += 2 {
+		req.Header.Set(header[i], header[i+1])
+	}
+	res, err := h.Server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = res.Body.Close() })
+	return res
+}
+
+// Create makes a conversation and returns its id.
+func (h *H) Create(t *testing.T, token string) string {
+	t.Helper()
+	res := h.Do(t, http.MethodPost, "/v1/conversations", token, map[string]any{})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: status %d", res.StatusCode)
+	}
+	var c struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&c); err != nil {
+		t.Fatal(err)
+	}
+	return c.ID
+}
+
+// Send posts a message and reads the whole answer stream.
+func (h *H) Send(t *testing.T, token, convID, content string) (*http.Response, []sse.Event) {
+	t.Helper()
+	res := h.Do(t, http.MethodPost, "/v1/conversations/"+convID+"/messages", token, map[string]string{"content": content})
+	if res.StatusCode != http.StatusOK {
+		return res, nil
+	}
+	return res, sse.All(res.Body)
+}
+
+// Text joins the delta texts of a stream.
+func Text(t *testing.T, events []sse.Event) string {
+	t.Helper()
+	var b strings.Builder
+	for _, ev := range events {
+		if ev.Event != "delta" {
+			continue
+		}
+		var d struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal([]byte(ev.Data), &d); err != nil {
+			t.Fatal(err)
+		}
+		b.WriteString(d.Text)
+	}
+	return b.String()
+}
+
+// Names returns the event names, comments left out.
+func Names(events []sse.Event) []string {
+	var out []string
+	for _, ev := range events {
+		if ev.Event != "comment" {
+			out = append(out, ev.Event)
+		}
+	}
+	return out
+}

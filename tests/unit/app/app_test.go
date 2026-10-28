@@ -33,7 +33,7 @@ func TestHealthProbes(t *testing.T) {
 	cfg := app.Config{Version: "0.1.0", Commit: "3f9c2e1", Env: "ci"}
 
 	t.Run("healthz is 200", func(t *testing.T) {
-		a, err := app.New(fakeDB{}, logger, cfg)
+		a, err := app.New(app.Deps{DB: fakeDB{}, Log: logger}, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -43,7 +43,7 @@ func TestHealthProbes(t *testing.T) {
 	})
 
 	t.Run("readyz is 503 before start", func(t *testing.T) {
-		a, err := app.New(fakeDB{}, logger, cfg)
+		a, err := app.New(app.Deps{DB: fakeDB{}, Log: logger}, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -53,7 +53,7 @@ func TestHealthProbes(t *testing.T) {
 	})
 
 	t.Run("readyz is 200 when the database pings", func(t *testing.T) {
-		a, err := app.New(fakeDB{}, logger, cfg)
+		a, err := app.New(app.Deps{DB: fakeDB{}, Log: logger}, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -64,7 +64,7 @@ func TestHealthProbes(t *testing.T) {
 	})
 
 	t.Run("readyz is 503 when the database is down", func(t *testing.T) {
-		a, err := app.New(fakeDB{err: errors.New("unreachable")}, logger, cfg)
+		a, err := app.New(app.Deps{DB: fakeDB{err: errors.New("unreachable")}, Log: logger}, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
