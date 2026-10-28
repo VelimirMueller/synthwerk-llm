@@ -184,6 +184,7 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, turn store.Turn
 		cancel()
 		<-readerDone
 	}()
+	// h.cfg is chat.Config (not config.Config); chat.New sets Heartbeat to 15 s when it is <= 0.
 	ping := time.NewTicker(h.cfg.Heartbeat)
 	defer ping.Stop()
 
