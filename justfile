@@ -10,16 +10,24 @@ zizmor_version := "1.30.1"
 build:
     go build ./...
 
-# gofmt, golangci-lint, actionlint + zizmor.
+# gofmt, golangci-lint (with and without the integration tag), actionlint + zizmor.
 lint:
     test -z "$(gofmt -l .)"
     golangci-lint run ./...
+    golangci-lint run --build-tags integration ./...
     actionlint .github/workflows/*.yml
     uvx zizmor@{{ zizmor_version }} --offline .github/workflows
 
-# Unit tests. No Docker.
-test:
+# Unit and integration tests.
+test: test-unit test-int
+
+# Unit and contract tests. No Docker.
+test-unit:
     go test -race ./...
+
+# Chat slice against real Postgres and NATS. Needs Docker (OrbStack).
+test-int:
+    go test -tags integration -race -count=1 ./tests/integration/...
 
 # Container image as CI builds it.
 image:

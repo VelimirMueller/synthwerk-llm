@@ -1,5 +1,7 @@
-# Thin caller of the synthwerk blueprint. The blueprint runs gofmt, golangci-lint,
-# go test -race ./... and go build, and builds, scans and (on push) signs the image.
+# Thin caller of the synthwerk blueprint plus the job it does not cover yet: the
+# integration tests against real Postgres and NATS. The blueprint runs gofmt,
+# golangci-lint, go test -race ./... and go build, and builds, scans and (on push)
+# signs the image.
 # Required checks for the ruleset: "ci / required" (blueprint jobs) and "gate" (all jobs).
 name: ci
 
@@ -26,6 +28,31 @@ jobs:
       contents: read
     uses: VelimirMueller/synthwerk-blueprint/.github/workflows/go-ci.yml@v1
 
+  # Chat slice against real Postgres (row level security as a non-superuser role) and
+  # NATS JetStream (testcontainers-go, images pinned in tests/support/containers),
+  # plus the lint of the files behind the build tag.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          # No module cache: this workflow also runs on release tags (zizmor cache-poisoning).
+          cache: false
+      - name: golangci-lint (build tag integration)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.14.0
+          args: --build-tags=integration ./...
+      - name: go test -tags integration
+        run: go test -tags integration -race -count=1 ./tests/integration/...
+
   # Blueprint: build, SBOM, Trivy scan. Push to main or a v* tag: also push to
   # ghcr.io/velimirmueller/synthwerk-llm, sign with cosign and attest the build provenance.
   image:
@@ -37,10 +64,10 @@ jobs:
       attestations: write
     uses: VelimirMueller/synthwerk-blueprint/.github/workflows/image.yml@v1
 
-  # One check over the blueprint jobs ("ci / required" covers the go-ci blueprint only).
+  # One check over the blueprint and the local jobs ("ci / required" covers the blueprint only).
   gate:
     if: always()
-    needs: [ci, image]
+    needs: [ci, integration, image]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
