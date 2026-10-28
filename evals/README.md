@@ -9,11 +9,11 @@
 
 | Where | What | Cost |
 |---|---|---|
-| `ci.yml`, every PR | `tests/unit/eval`: checks, set integrity, gate rules, runner with the fake provider, a perfect "oracle" run, a failing echo run. | seconds |
-| `eval.yml`, PRs and pushes to `main` that touch `evals/`, `internal/eval/`, `cmd/eval/`, `internal/provider/`, `internal/config/` or `eval.yml` | Real model on Ollama (CPU, same image pin as `synthwerk-infra/compose.yaml`), job summary, report artifact. | a few minutes |
-| `eval.yml`, manual (`workflow_dispatch`) | Same, with an optional `aliases` input, for example `default=qwen3.5:2b`, to score another model before you change the default. | a few minutes |
+| `ci.yml` stage `unit`, every PR | `tests/unit/eval`: checks, set integrity, gate rules, runner with the fake provider, a perfect "oracle" run, a failing echo run. | seconds |
+| `ci.yml` job `eval`, PRs that touch `evals/`, `internal/eval/`, `cmd/eval/`, `internal/provider/`, `internal/config/` or `ci.yml` | Real model on Ollama (CPU, same image pin as `synthwerk-infra/compose.yaml`), job summary, report artifact. | a few minutes |
+| `ci.yml` job `eval`, manual (`workflow_dispatch`) | Same, with an optional `aliases` input, for example `default=qwen3.5:2b`, to score another model before you change the default. | a few minutes |
 
-- Other PRs get the check `eval / required` green at once (job `changes`).
+- On other PRs the `eval` job skips the model steps (step `scope`) and passes. The required check is `conclusion`.
 - The model comes from the alias parser of the gateway: `SYNTHWERK_LLM_MODEL_ALIASES`, or `config.DefaultModelAliases` when unset. A change to the default alias changes the model the eval scores, and `internal/config/` is in the path filter.
 - A missing model, a failed pull or a provider error on every case fails the run. It is never a skip.
 
@@ -76,7 +76,7 @@ Exit code 0 = gate passed, 1 = gate failed, 2 = the run could not happen.
 ## Change the set, the thresholds or the baseline
 
 - New or changed case: edit `cases.jsonl` and add the right answer to `oracle` in `tests/unit/eval/eval_test.go`. A case that a good model fails for the wrong reason is a bad case: fix the prompt or drop it.
-- A change to the cases of a released version: copy to `chat/v2`, bump `version` in `MANIFEST.json`, point `EVAL_SET` in `eval.yml` to it. Small fixes before the first baseline may stay in `v1`.
+- A change to the cases of a released version: copy to `chat/v2`, bump `version` in `MANIFEST.json`, point `EVAL_SET` of the `eval` job in `ci.yml` to it. Small fixes before the first baseline may stay in `v1`.
 - After any change to `cases.jsonl`: `just eval-manifest`.
 - New baseline: run the eval with `-write-baseline evals/chat/v1/baseline.json` on the model of the alias `default`, or take `cases[].passed` from the report artifact of the CI run.
 - A change to `thresholds.json` or `baseline.json` needs a reason in the PR body (`thresholds.json` also has a `reason` field). A test fails when `baseline.json` was taken on another model than the default alias.
