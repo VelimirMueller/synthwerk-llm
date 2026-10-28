@@ -319,11 +319,13 @@ func TestGateRules(t *testing.T) {
 		{"category floor", set(eval.Thresholds{MinScore: 0.5, MinCategory: map[string]float64{"format": 1}}, nil), res("a", "b", "c", "e"), false, "category format"},
 		{"critical", set(eval.Thresholds{MinScore: 0.5}, nil), res("a", "b", "c", "d"), false, "critical cases failed: e"},
 		{"regressions", set(eval.Thresholds{MinScore: 0.5, MaxRegressions: 1}, map[string]bool{"a": true, "b": true, "c": true, "d": false, "e": true}), res("c", "d", "e"), false, "2 regressions against the baseline, max 1"},
+		{"critical known in the baseline", set(eval.Thresholds{MinScore: 0.5}, map[string]bool{"e": false}), res("a", "b", "c", "d"), true, ""},
+		{"critical known for another model", setModel(set(eval.Thresholds{MinScore: 0.5}, map[string]bool{"e": false}), "other"), res("a", "b", "c", "d"), false, "critical cases failed: e"},
 		{"regressions in band", set(eval.Thresholds{MinScore: 0.5, MaxRegressions: 1}, map[string]bool{"a": true, "d": false}), res("b", "c", "d", "e"), true, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			rep := eval.Score(tc.s, tc.r, eval.Options{}, "fake")
+			rep := eval.Score(tc.s, tc.r, eval.Options{Model: "old"}, "fake")
 			if rep.Gate.Pass != tc.pass || !strings.Contains(strings.Join(rep.Gate.Reasons, "|"), tc.reason) {
 				t.Fatalf("gate %+v", rep.Gate)
 			}
@@ -332,6 +334,11 @@ func TestGateRules(t *testing.T) {
 			}
 		})
 	}
+}
+
+func setModel(s *eval.Set, model string) *eval.Set {
+	s.Baseline.Model = model
+	return s
 }
 
 func TestStripsThinkingTrace(t *testing.T) {

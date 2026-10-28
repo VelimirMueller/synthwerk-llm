@@ -32,3 +32,12 @@ test-int:
 # Container image as CI builds it.
 image:
     docker build --build-arg COMMIT="$(git rev-parse HEAD)" -t synthwerk-llm:local .
+
+# Chat eval of the alias "default" against a local Ollama (ollama pull the model first).
+eval set="evals/chat/v1":
+    go run ./cmd/eval -set {{ set }} -summary ""
+
+# Recompute MANIFEST.json after a change to cases.jsonl (bump the version too).
+eval-manifest set="evals/chat/v1":
+    jq --arg sha "$(shasum -a 256 {{ set }}/cases.jsonl | cut -d' ' -f1)" --argjson n "$(grep -c . {{ set }}/cases.jsonl)" '.sha256 = $sha | .cases = $n' {{ set }}/MANIFEST.json > {{ set }}/MANIFEST.json.tmp
+    mv {{ set }}/MANIFEST.json.tmp {{ set }}/MANIFEST.json

@@ -34,8 +34,12 @@ type Report struct {
 	Score      float64                   `json:"score"`
 	MinScore   float64                   `json:"min_score"`
 	Categories map[string]*CategoryScore `json:"categories"`
-	// CriticalFailed lists critical cases that failed. Any one fails the gate.
+	// CriticalFailed lists critical cases that failed and did not fail in the
+	// baseline. Any one fails the gate.
 	CriticalFailed []string `json:"critical_failed"`
+	// CriticalKnown lists critical cases that failed in the baseline too: a known
+	// weakness of the model, shown in the summary, not a gate failure.
+	CriticalKnown []string `json:"critical_known"`
 	// Regressions pass in the baseline and fail now; Fixed is the other way.
 	Regressions    []string `json:"regressions"`
 	Fixed          []string `json:"fixed"`
@@ -55,7 +59,7 @@ func Score(s *Set, results []CaseResult, o Options, providerName string) *Report
 	r := &Report{
 		SetVersion: s.Manifest.Version, Alias: o.Alias, Model: o.Model, Provider: providerName, Seed: o.Seed,
 		Total: len(s.Cases), MinScore: s.Thresholds.MinScore, MaxRegressions: s.Thresholds.MaxRegressions,
-		Categories: map[string]*CategoryScore{}, CriticalFailed: []string{}, Regressions: []string{}, Fixed: []string{},
+		Categories: map[string]*CategoryScore{}, CriticalFailed: []string{}, CriticalKnown: []string{}, Regressions: []string{}, Fixed: []string{},
 		Cases: results,
 	}
 	byID := map[string]CaseResult{}
@@ -79,7 +83,11 @@ func Score(s *Set, results []CaseResult, o Options, providerName string) *Report
 			r.Passed++
 			cat.Passed++
 		} else if c.Critical {
-			r.CriticalFailed = append(r.CriticalFailed, c.ID)
+			if s.Baseline != nil && s.Baseline.Model == o.Model && knownFail(s.Baseline, c.ID) {
+				r.CriticalKnown = append(r.CriticalKnown, c.ID)
+			} else {
+				r.CriticalFailed = append(r.CriticalFailed, c.ID)
+			}
 		}
 		if s.Baseline != nil {
 			was, known := s.Baseline.Passed[c.ID]
@@ -112,6 +120,12 @@ func Score(s *Set, results []CaseResult, o Options, providerName string) *Report
 	}
 	r.gate()
 	return r
+}
+
+// knownFail reports whether the baseline holds the case as failed.
+func knownFail(b *Baseline, id string) bool {
+	passed, ok := b.Passed[id]
+	return ok && !passed
 }
 
 func (r *Report) gate() {
@@ -149,6 +163,9 @@ func (r *Report) Markdown() string {
 	fmt.Fprintf(&b, "- Score **%d/%d = %.1f%%** (floor %.1f%%).\n", r.Passed, r.Total, r.Score*100, r.MinScore*100)
 	if r.BaselineModel != "" {
 		fmt.Fprintf(&b, "- Against the baseline (`%s`): %d regressions (max %d), %d fixed.\n", r.BaselineModel, len(r.Regressions), r.MaxRegressions, len(r.Fixed))
+	}
+	if len(r.CriticalKnown) > 0 {
+		fmt.Fprintf(&b, "- **Known critical failures** of `%s` (failed in the baseline too, not a gate failure): %s.\n", r.Model, strings.Join(r.CriticalKnown, ", "))
 	}
 	if r.Errors > 0 {
 		fmt.Fprintf(&b, "- %d cases had a provider error (counted as failed).\n", r.Errors)
