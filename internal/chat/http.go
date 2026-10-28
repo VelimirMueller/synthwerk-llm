@@ -115,8 +115,8 @@ func decode(w http.ResponseWriter, r *http.Request, dst any, emptyOK bool) error
 	if err != nil {
 		return err
 	}
-	if dec.More() {
-		return errors.New("trailing data")
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return errors.New("trailing data after the JSON body")
 	}
 	return nil
 }

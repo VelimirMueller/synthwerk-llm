@@ -256,7 +256,11 @@ func TestLogsHoldNoPromptOrAnswer(t *testing.T) {
 		}
 		r.Do(t, http.MethodPost, "/v1/conversations/"+id+"/messages", "", map[string]string{"content": prompt})
 		r.Do(t, http.MethodPost, "/v1/conversations/"+id+"/messages", "bad.token.x", map[string]string{"content": prompt})
-		time.Sleep(100 * time.Millisecond) // the finish log line comes after the stream
+		// The finish log line comes after the stream ends.
+		deadline := time.Now().Add(5 * time.Second)
+		for !strings.Contains(r.Logs.String(), `"llm.message.finished"`) && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
 		logs = append(logs, r.Logs.String())
 		if !strings.Contains(r.Logs.String(), `"llm.message.finished"`) {
 			t.Errorf("%s: no finish log line", name)
@@ -292,7 +296,9 @@ func waitStatus(t *testing.T, r *rig, status string) {
 	t.Helper()
 	for range 50 {
 		var n int
-		_ = r.admin(t).QueryRow(t.Context(), `SELECT count(*) FROM llm.message WHERE role = 'assistant' AND status = $1`, status).Scan(&n)
+		if err := r.admin(t).QueryRow(t.Context(), `SELECT count(*) FROM llm.message WHERE role = 'assistant' AND status = $1`, status).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
 		if n > 0 {
 			return
 		}

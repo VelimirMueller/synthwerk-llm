@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -46,9 +47,7 @@ func adapters() []adapter {
 			case modeDown:
 				f.FailChat = true
 			case modeSlow:
-				f.Reply = func(provider.Request) []string { return []string{"hello", " never"} }
-				f.Delay = 0
-				return slowFake{f}
+				return slowFake{}
 			case modeOK:
 			}
 			return f
@@ -66,7 +65,9 @@ func adapters() []adapter {
 }
 
 // slowFake hangs after the first piece until the context ends.
-type slowFake struct{ *fake.Provider }
+type slowFake struct{}
+
+func (slowFake) Name() string { return "slow" }
 
 func (slowFake) Chat(ctx context.Context, _ provider.Request) (provider.Stream, error) {
 	return &slowStream{ctx: ctx}, nil
@@ -207,9 +208,12 @@ func TestConformance(t *testing.T) {
 }
 
 func TestOpenAICompatRequestShapeAndKey(t *testing.T) {
+	var mu sync.Mutex
 	var got map[string]any
 	var auth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
 		auth = r.Header.Get("Authorization")
 		_ = json.NewDecoder(r.Body).Decode(&got)
 		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"x\"},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n")
@@ -226,6 +230,9 @@ func TestOpenAICompatRequestShapeAndKey(t *testing.T) {
 	if _, err := drain(st); !errors.Is(err, io.EOF) {
 		t.Fatal(err)
 	}
+	srv.Close() // the handler has returned
+	mu.Lock()
+	defer mu.Unlock()
 	if auth != "Bearer k-1" || got["model"] != "qwen3.5:4b" {
 		t.Fatalf("auth %q body %v", auth, got)
 	}

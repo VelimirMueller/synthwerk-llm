@@ -91,6 +91,9 @@ func New(cfg Config, st Store, p provider.Provider, guard quota.Guard, logger *s
 	if cfg.StreamTimeout <= 0 {
 		cfg.StreamTimeout = 120 * time.Second
 	}
+	if cfg.MaxContextChars <= 0 {
+		cfg.MaxContextChars = 24000
+	}
 	if cfg.QueueTimeout <= 0 {
 		cfg.QueueTimeout = 10 * time.Second
 	}
@@ -133,9 +136,10 @@ func (h *Handler) acquireModel(ctx context.Context) (release func(), ok bool) {
 }
 
 // history turns stored messages into model messages: the system prompt, then the
-// newest turns that fit MaxContextChars, then the new user text.
+// newest turns that fit MaxContextChars, then the new user text. It stops at the
+// first turn that does not fit, so the model never sees a history with a gap.
 func (h *Handler) history(past []store.Message, text string) []provider.Message {
-	budget := h.cfg.MaxContextChars - len([]rune(text))
+	budget := max(0, h.cfg.MaxContextChars-len([]rune(text)))
 	var keep []provider.Message
 	for i := len(past) - 1; i >= 0; i-- {
 		m := past[i]

@@ -56,6 +56,7 @@ import (
 	"github.com/VelimirMueller/synthwerk-llm/internal/chat"
 	"github.com/VelimirMueller/synthwerk-llm/internal/config"
 	"github.com/VelimirMueller/synthwerk-llm/internal/provider/registry"
+	"github.com/VelimirMueller/synthwerk-llm/internal/quota"
 	"github.com/VelimirMueller/synthwerk-llm/internal/store"
 )
 
@@ -136,7 +137,15 @@ func run(ctx context.Context) error {
 
 	nc, err := nats.Connect(cfg.NATSURL, nats.Name("synthwerk-"+app.Service), nats.MaxReconnects(-1))
 	if err != nil {
-		return errors.New("nats does not connect") // the error text may hold the URL with credentials
+		// The error text may hold the URL with credentials: name the class only.
+		switch {
+		case errors.Is(err, nats.ErrAuthorization):
+			return errors.New("nats does not connect: authorization violation")
+		case errors.Is(err, nats.ErrNoServers):
+			return errors.New("nats does not connect: no server reachable")
+		default:
+			return errors.New("nats does not connect")
+		}
 	}
 	defer nc.Close()
 	js, err := jetstream.New(nc)
@@ -175,7 +184,7 @@ func run(ctx context.Context) error {
 		ProviderConcurrency: cfg.ProviderConcurrency,
 		QueueTimeout:        cfg.QueueTimeout,
 		Source:              source,
-	}, st, prov, nil, logger)
+	}, st, prov, quota.None{}, logger) // #33 replaces the no-op guard
 
 	a, err := app.New(app.Deps{
 		DB: db, Log: logger, Chat: chatHandler, Verifier: verifier,

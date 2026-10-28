@@ -41,6 +41,9 @@ func Read(body io.Reader) <-chan Event {
 			case strings.HasPrefix(line, "event: "):
 				ev.Event = line[7:]
 			case strings.HasPrefix(line, "data: "):
+				if ev.Data != "" {
+					ev.Data += "\n"
+				}
 				ev.Data += line[6:]
 			}
 		}
