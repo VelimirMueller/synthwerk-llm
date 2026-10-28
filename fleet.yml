@@ -1,0 +1,32 @@
+# fleet.yml: tier and visibility of this repo (STANDARD.md). Exceptions: docs/rollout.md.
+tier: deploys
+visibility: public
+
+exceptions:
+  - rule: WF-NAME-02
+    value:
+      ci.yml: [integration]
+    reason: The unit stage runs without network services (CI-UNIT-05); the integration job tests the chat slice against real Postgres and NATS on every PR.
+  - rule: CI-COST-15
+    value: 4
+    reason: The integration job is the fourth PR job; it is the only test against real Postgres and NATS and the repo is public (free minutes).
+    expires: 2027-04-30
+  - rule: CI-UNIT-03
+    value:
+      lines: 35
+    reason: Unit and contract tests cover 40.4 % of internal/ today; store and the chat HTTP path are tested only by the integration job. ci.yml sets coverage-floor 35; raise it as unit tests land.
+  - rule: GOV-REPO-01
+    value: default-branch-main
+    reason: The default branch stays main until the control repo creates develop and stage (fleet-standard#7).
+  - rule: GOV-RS-02
+    value: not-created-yet
+    reason: develop does not exist yet; the control repo creates it with its ruleset (fleet-standard#7).
+  - rule: GOV-RS-03
+    value: not-created-yet
+    reason: develop does not exist yet; the control repo creates it with its ruleset (fleet-standard#7).
+  - rule: GOV-RS-04
+    value: not-created-yet
+    reason: stage does not exist yet and main has only classic branch protection without required checks; the control repo creates both rulesets (fleet-standard#7).
+  - rule: GOV-ENV-01
+    value: not-created-yet
+    reason: The environments dev, stg and prd do not exist yet; the control repo creates them (fleet-standard#7).
