@@ -239,6 +239,12 @@ func TestOpenAICompatRequestShapeAndKey(t *testing.T) {
 	if so, _ := got["stream_options"].(map[string]any); so["include_usage"] != true {
 		t.Fatalf("stream_options %v", got["stream_options"])
 	}
+	// Zero options send nothing: the model defaults apply to the gateway.
+	for _, k := range []string{"temperature", "seed", "max_tokens", "reasoning_effort"} {
+		if _, ok := got[k]; ok {
+			t.Fatalf("%s sent without an option: %v", k, got)
+		}
+	}
 	res := st.Result()
 	if res.Finish != provider.FinishLength || !res.Usage.Estimated || res.Usage.OutputTokens != 1 {
 		t.Fatalf("result %+v", res)
@@ -248,5 +254,40 @@ func TestOpenAICompatRequestShapeAndKey(t *testing.T) {
 func TestOpenAICompatRefusesBadBaseURL(t *testing.T) {
 	if _, err := openaicompat.New(openaicompat.Config{BaseURL: "ollama:11434"}); err == nil {
 		t.Fatal("want an error")
+	}
+}
+
+func TestOpenAICompatSendsOptions(t *testing.T) {
+	var mu sync.Mutex
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"x\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	p, err := openaicompat.New(openaicompat.Config{BaseURL: srv.URL + "/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	temp, seed := 0.0, 42
+	st, err := p.Chat(t.Context(), provider.Request{
+		Model:    "qwen3.5:4b",
+		Messages: []provider.Message{{Role: provider.RoleUser, Text: "hi"}},
+		Options:  provider.Options{Temperature: &temp, Seed: &seed, MaxTokens: 128, NoThinking: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := drain(st); !errors.Is(err, io.EOF) {
+		t.Fatal(err)
+	}
+	srv.Close()
+	mu.Lock()
+	defer mu.Unlock()
+	// temperature 0 must be sent, not dropped as an empty value.
+	if got["temperature"] != 0.0 || got["seed"] != 42.0 || got["max_tokens"] != 128.0 || got["reasoning_effort"] != "none" {
+		t.Fatalf("body %v", got)
 	}
 }

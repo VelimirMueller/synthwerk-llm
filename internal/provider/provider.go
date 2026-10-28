@@ -38,6 +38,20 @@ type Request struct {
 	Model string
 	// Messages, oldest first. The system prompt, if any, is the first one.
 	Messages []Message
+	// Options tune the sampling. The zero value sends nothing: the model defaults apply.
+	Options Options
+}
+
+// Options tune one call. The eval runner (#72) pins them for repeatable answers.
+type Options struct {
+	// Temperature, nil: the model default.
+	Temperature *float64
+	// Seed of the sampler, nil: random.
+	Seed *int
+	// MaxTokens bounds the answer, 0: no bound.
+	MaxTokens int
+	// NoThinking asks a reasoning model (qwen3.5) to answer without a thinking trace.
+	NoThinking bool
 }
 
 // FinishReason says why the model stopped.

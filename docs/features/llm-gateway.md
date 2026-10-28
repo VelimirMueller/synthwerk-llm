@@ -44,6 +44,8 @@ After the first byte the status stays 200; a failure is an `error` event. A clie
 | `openai_compat` | `openaicompat` | `BASE_URL` required. `API_KEY` or `API_KEY_FILE`. |
 | `fake` | `fake` | Echoes the last user message, one word per piece, `FAKE_DELAY` between pieces. Refused in `stg` and `prd`. |
 
+`Request.Options` (temperature, seed, max tokens, thinking off) is empty for the chat handler, so the model defaults apply. The eval (`evals/README.md`) pins them.
+
 Adapter errors never hold the provider's body or the prompt. `tests/contract/provider` runs the same conformance checks on every adapter.
 
 ## Data
@@ -71,4 +73,4 @@ Migration `0002_conversations.sql`, schema `llm`:
 
 ## Not in this slice
 
-Quotas (#33), eval (#72), Anthropic adapter (E4), `GET /v1/models`, list/delete/resume of conversations, a second DB role for migrations, scope checks (claim names wait for #28/#30).
+Quotas (#33), Anthropic adapter (E4), `GET /v1/models`, list/delete/resume of conversations, a second DB role for migrations, scope checks (claim names wait for #28/#30).
