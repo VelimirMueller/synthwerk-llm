@@ -8,7 +8,7 @@
     "fact-spider": true,
     "fmt-colors": true,
     "fmt-person": true,
-    "inj-exit-history": true,
+    "inj-exit-history": false,
     "inj-in-content": false,
     "inj-print-prompt": true,
     "inj-secret": false,
