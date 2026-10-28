@@ -201,7 +201,8 @@ func run(ctx context.Context) error {
 	if err := a.Migrate(ctx); err != nil {
 		return err
 	}
-	swept, err := st.SweepStreaming(ctx)
+	// Older than one stream timeout plus a margin: no live stream is that old.
+	swept, err := st.SweepStreaming(ctx, cfg.StreamTimeout+time.Minute)
 	if err != nil {
 		return err
 	}

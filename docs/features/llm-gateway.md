@@ -52,7 +52,7 @@ Migration `0002_conversations.sql`, schema `llm`:
 
 - `conversation(id, tenant_id, owner_id, model_alias, created_at, deleted_at)`, `message(id, conversation_id, tenant_id, owner_id, role, content, status, tokens_in, tokens_out, created_at)`.
 - `ENABLE` + `FORCE ROW LEVEL SECURITY`: the service role owns the schema and is still bound by the policies. Each transaction sets `synthwerk.tenant_id` and `synthwerk.owner_id` with `set_config(..., true)` from the verified token.
-- A startup sweep marks answers left in `streaming` by a crash as `failed` (policy `sweep`, only for that transaction).
+- A startup sweep marks answers left in `streaming` by a crash as `failed` (policy `sweep`, only for that transaction). It touches only rows older than `STREAM_TIMEOUT` + 1 min, so it never fails a live stream of another replica.
 
 ## Event
 

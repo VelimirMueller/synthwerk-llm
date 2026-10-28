@@ -162,7 +162,9 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, turn store.Turn
 		err  error
 	}
 	pieces := make(chan piece)
+	readerDone := make(chan struct{})
 	go func() {
+		defer close(readerDone)
 		defer close(pieces)
 		for {
 			t, err := st.Next()
@@ -175,6 +177,12 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, turn store.Turn
 				return
 			}
 		}
+	}()
+	// Runs before the deferred st.Close: stop the reader first, so Close never
+	// overlaps Next. The context bounds every Next (provider contract).
+	defer func() {
+		cancel()
+		<-readerDone
 	}()
 	ping := time.NewTicker(h.cfg.Heartbeat)
 	defer ping.Stop()

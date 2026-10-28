@@ -250,9 +250,10 @@ func (s *Store) Finish(ctx context.Context, o Owner, f Final, ev cloudevents.Eve
 	return nil
 }
 
-// SweepStreaming marks answers left in streaming by a crash as failed. Run it at
-// startup, before the server takes requests.
-func (s *Store) SweepStreaming(ctx context.Context) (int64, error) {
+// SweepStreaming marks answers left in streaming by a crash as failed. Only rows
+// older than olderThan count: another replica may still stream a newer one. Use
+// more than the stream timeout. Run it at startup.
+func (s *Store) SweepStreaming(ctx context.Context, olderThan time.Duration) (int64, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("store: sweep: %w", err)
@@ -261,7 +262,9 @@ func (s *Store) SweepStreaming(ctx context.Context) (int64, error) {
 	if _, err := tx.Exec(ctx, `SELECT set_config('synthwerk.sweep', 'on', true)`); err != nil {
 		return 0, fmt.Errorf("store: sweep: %w", err)
 	}
-	tag, err := tx.Exec(ctx, `UPDATE llm.message SET status = 'failed' WHERE status = 'streaming'`)
+	tag, err := tx.Exec(ctx,
+		`UPDATE llm.message SET status = 'failed' WHERE status = 'streaming' AND created_at < now() - make_interval(secs => $1)`,
+		olderThan.Seconds())
 	if err != nil {
 		return 0, fmt.Errorf("store: sweep: %w", err)
 	}

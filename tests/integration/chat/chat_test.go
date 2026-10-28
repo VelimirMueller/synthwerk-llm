@@ -483,7 +483,11 @@ func TestSweepMarksStuckAnswersFailed(t *testing.T) {
 	if _, err := r.st.StartTurn(t.Context(), o, c.ID, "hi"); err != nil {
 		t.Fatal(err)
 	}
-	n, err := r.st.SweepStreaming(t.Context())
+	if n, err := r.st.SweepStreaming(t.Context(), time.Hour); err != nil || n != 0 {
+		t.Fatalf("a young streaming row was swept: %d, %v", n, err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	n, err := r.st.SweepStreaming(t.Context(), 10*time.Millisecond)
 	if err != nil || n != 1 {
 		t.Fatalf("swept %d, %v", n, err)
 	}
