@@ -1,82 +1,157 @@
-# Thin caller of the synthwerk blueprint plus the job it does not cover yet: the
-# integration tests against real Postgres and NATS. The blueprint runs gofmt,
-# golangci-lint, go test -race ./... and go build, and builds, scans and (on push)
-# signs the image.
-# Required checks for the ruleset: "ci / required" (blueprint jobs) and "gate" (all jobs).
+# Fleet standard ci.yml (fleet-standard templates/deploys/public) plus the integration job: the chat
+# slice against real Postgres (row level security) and NATS (testcontainers). The integration job is an
+# exception (fleet.yml WF-NAME-02): the unit stage runs without network services (CI-UNIT-05).
+# The image is published only by deploy.yml. Required check for the rulesets: "conclusion".
+# No push trigger (CI-COST-05): a change reaches main through a PR run of this workflow.
 name: ci
 
 on:
   pull_request:
-  push:
-    branches: [main]
-    tags: ["v*"]
+    branches: [develop, main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      e2e:
+        description: Run the e2e stage
+        type: boolean
+        default: false
 
 permissions: {}
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 defaults:
   run:
-    shell: bash --noprofile --norc -euo pipefail {0}
+    shell: bash
+
+concurrency:
+  group: ci-${{ github.event.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  # Blueprint: gofmt, golangci-lint, go test -race ./..., go build.
-  ci:
+  changes:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
-    uses: VelimirMueller/synthwerk-blueprint/.github/workflows/go-ci.yml@v1
+      pull-requests: read
+    outputs:
+      code: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' }}
+    steps:
+      # Only negated patterns, so predicate-quantifier must be `every`: paths-filter applies it per
+      # file. A file is code when it matches every pattern (it is not docs); code=true when any
+      # changed file is code. A .go-only PR gives code=true, a README-only PR gives code=false.
+      - name: Detect code changes
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        with:
+          predicate-quantifier: every
+          filters: |
+            code:
+              - '!**/*.md'
+              - '!docs/**'
+              - '!LICENSE'
+              - '!.github/ISSUE_TEMPLATE/**'
 
-  # Chat slice against real Postgres (row level security as a non-superuser role) and
-  # NATS JetStream (testcontainers-go, images pinned in tests/support/containers),
-  # plus the lint of the files behind the build tag.
+  lint:
+    needs: changes
+    if: ${{ !failure() && !cancelled() && needs.changes.outputs.code == 'true' }}
+    permissions:
+      contents: read
+    uses: VelimirMueller/fleet-workflows/.github/workflows/_ci-lint.yml@v0.0.2
+    with:
+      stack: go
+
+  unit:
+    needs: [changes, lint]
+    if: ${{ !failure() && !cancelled() && needs.changes.outputs.code == 'true' }}
+    permissions:
+      contents: read
+    uses: VelimirMueller/fleet-workflows/.github/workflows/_ci-unit.yml@v0.0.2
+    with:
+      stack: go
+      # The tests live in tests/unit and tests/contract, so the coverage counts internal/ (-coverpkg).
+      # Floor 35: these tests cover 40.4 % today; store and the chat HTTP path are tested only by
+      # the integration job (Postgres, NATS). CI-UNIT-03 wants 80 (fleet.yml exception).
+      command: go test -race -covermode=atomic -coverpkg=./internal/... -coverprofile=coverage/cover.out ./tests/unit/... ./tests/contract/...
+      coverage-floor: 35
+
+  # e2e runs on dispatch and in promote.yml before stg (CI-E2E-01); a PR runs the same suite
+  # in the extra job below. build needs e2e only so a dispatched e2e failure stops the build.
+  e2e:
+    needs: [changes, unit]
+    if: ${{ !failure() && !cancelled() && github.event_name == 'workflow_dispatch' && inputs.e2e }}
+    permissions:
+      contents: read
+    uses: VelimirMueller/fleet-workflows/.github/workflows/_ci-e2e.yml@v0.0.2
+    with:
+      stack: go
+      # The integration suite as JUnit; the integration job runs it on every PR.
+      command: go run gotest.tools/gotestsum@v1.13.0 --junitfile e2e-junit.xml -- -tags integration -race -count=1 ./tests/integration/...
+
+  build:
+    needs: [changes, e2e]
+    if: ${{ !failure() && !cancelled() && needs.changes.outputs.code == 'true' }}
+    permissions:
+      contents: read
+    uses: VelimirMueller/fleet-workflows/.github/workflows/_ci-build.yml@v0.0.2
+    with:
+      stack: go
+      image: true
+
+  # Chat slice against real Postgres (row level security as a non-superuser role) and NATS JetStream
+  # (testcontainers-go, images pinned in tests/support/containers), plus the lint of the files behind
+  # the build tag.
   integration:
+    needs: [changes, lint]
+    if: ${{ !failure() && !cancelled() && needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - name: Install Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          # No module cache: this workflow also runs on release tags (zizmor cache-poisoning).
-          cache: false
-      - name: golangci-lint (build tag integration)
+          cache: true
+      - name: Lint the integration build tag with golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.14.0
           args: --build-tags=integration ./...
-      - name: go test -tags integration
+      - name: Run the integration tests
         run: go test -tags integration -race -count=1 ./tests/integration/...
 
-  # Blueprint: build, SBOM, Trivy scan. Push to main or a v* tag: also push to
-  # ghcr.io/velimirmueller/synthwerk-llm, sign with cosign and attest the build provenance.
-  image:
-    # GitHub checks these at start, also on pull requests, where nothing is pushed.
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-      attestations: write
-    uses: VelimirMueller/synthwerk-blueprint/.github/workflows/image.yml@v1
-
-  # One check over the blueprint and the local jobs ("ci / required" covers the blueprint only).
-  gate:
+  # The one required check. `skipped` passes only for e2e (dispatch only) and for a docs-only run
+  # (code=false). With code=true every listed stage must be `success`; a skipped one fails here.
+  # A failed `changes` job fails the first loop (its result is `failure`), whatever CODE holds.
+  # A draft PR skips every job on purpose (CI-COST-10); ready_for_review starts the real run.
+  conclusion:
+    needs: [changes, lint, unit, e2e, build, integration]
     if: always()
-    needs: [ci, integration, image]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
     steps:
-      - name: All jobs passed
+      - name: Fail when a job failed or a required stage was skipped
         env:
+          CODE: ${{ needs.changes.outputs.code }}
           RESULTS: ${{ join(needs.*.result, ' ') }}
+          LINT: ${{ needs.lint.result }}
+          UNIT: ${{ needs.unit.result }}
+          BUILD: ${{ needs.build.result }}
+          INTEGRATION: ${{ needs.integration.result }}
         run: |
-          echo "Results: $RESULTS"
-          for result in $RESULTS; do
-            [[ "$result" == "success" ]] || exit 1
+          for r in $RESULTS; do
+            case "$r" in success|skipped) ;; *) echo "::error::a job ended as $r"; exit 1 ;; esac
           done
+          if [ "$CODE" = "true" ]; then
+            for r in "$LINT" "$UNIT" "$BUILD" "$INTEGRATION"; do
+              [ "$r" = "success" ] || { echo "::error::a required stage did not run"; exit 1; }
+            done
+          fi

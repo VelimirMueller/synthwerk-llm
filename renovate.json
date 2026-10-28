@@ -1,4 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>VelimirMueller/synthwerk-blueprint//renovate/default"]
+  "extends": ["github>VelimirMueller/synthwerk-blueprint//renovate/default", "group:all"],
+  "schedule": ["before 9am on monday"],
+  "prConcurrentLimit": 5
 }

@@ -1,0 +1,61 @@
+# Deploy the develop SHA to dev: build once, publish, deploy (CI-DEPLOY-*). Start it by hand
+# on develop: gh workflow run deploy.yml --ref develop
+# synthwerk-llm has no host yet: build publishes ghcr.io/velimirmueller/synthwerk-llm:<sha>,
+# deploy-dev deploys nothing. The synthwerk-infra compose stack pins the image by digest.
+name: deploy
+run-name: deploy · dev · ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      env: ${{ steps.resolve.outputs.env }}
+    steps:
+      - name: Resolve the environment from the ref
+        id: resolve
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          [ "$REF" = "refs/heads/develop" ] || { echo "::error::deploy-dev runs only on develop"; exit 1; }
+          echo "env=dev" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: setup
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      packages: write
+      checks: read
+      pull-requests: read
+    uses: VelimirMueller/fleet-workflows/.github/workflows/_build-publish.yml@v0.0.2
+    with:
+      stack: go
+      image: true
+
+  deploy-dev:
+    needs: [setup, build]
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    uses: VelimirMueller/fleet-workflows/.github/workflows/_deploy-run.yml@v0.0.2
+    with:
+      environment: ${{ needs.setup.outputs.env }}
+      github-environment: dev
+      # No deploy command and no health URL yet: llm has no host (synthwerk-infra runs it).

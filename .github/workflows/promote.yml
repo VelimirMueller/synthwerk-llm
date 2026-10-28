@@ -1,0 +1,133 @@
+# Promote the verified SHA: preflight, e2e (stg only), fast-forward stage or main, deploy,
+# smoke test (CI-PROMOTE-*). Start it by hand on develop:
+#   gh workflow run promote.yml --ref develop -f target=stg   (then prd, or stg-hotfix)
+# public: promote-stg and promote-prd wait for an approval on their gate environment.
+name: promote
+run-name: promote · ${{ inputs.target == 'prd' && 'prd' || 'stg' }} · ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: stg, prd, or stg-hotfix (fast-forward stage to a hotfix on main)
+        type: choice
+        options: [stg, prd, stg-hotfix]
+        required: true
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: promote-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      env: ${{ steps.resolve.outputs.env }}
+    steps:
+      - name: Resolve the environment from the target
+        id: resolve
+        env:
+          REF: ${{ github.ref }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          [ "$REF" = "refs/heads/develop" ] || { echo "::error::promote runs only on develop"; exit 1; }
+          case "$TARGET" in
+            stg|stg-hotfix) echo "env=stg" >> "$GITHUB_OUTPUT" ;;
+            prd) echo "env=prd" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::unknown target $TARGET"; exit 1 ;;
+          esac
+
+  preflight:
+    needs: setup
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      actions: read
+    uses: VelimirMueller/fleet-workflows/.github/workflows/_promote-preflight.yml@v0.0.2
+    with:
+      target: ${{ inputs.target }}
+
+  # stg-hotfix skips e2e: preflight only lets it take the SHA that main already runs in prd.
+  e2e:
+    needs: [setup, preflight]
+    if: inputs.target == 'stg'
+    permissions:
+      contents: read
+    uses: VelimirMueller/fleet-workflows/.github/workflows/_ci-e2e.yml@v0.0.2
+    with:
+      stack: go
+      command: go run gotest.tools/gotestsum@v1.13.0 --junitfile e2e-junit.xml -- -tags integration -race -count=1 ./tests/integration/...
+      environment: stg
+      ref: ${{ needs.preflight.outputs.sha }}
+
+  gate-stg:
+    needs: [setup, preflight, e2e]
+    if: ${{ !failure() && !cancelled() && needs.setup.outputs.env == 'stg' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions: {}
+    environment: promote-stg
+    steps:
+      - name: Record the stg approval
+        run: echo "stg promotion approved"
+
+  # prd needs no e2e here. fleet-workflows _promote-preflight.yml@v0.0.2 (target prd) sets
+  # sha = the stage head and fails with "no green promote.yml run deployed $sha to stg" unless a
+  # successful stg run of this workflow (e2e included) exists for that SHA. The only other prd
+  # path is a hotfix that main already holds. For stg-hotfix it fails unless stage is contained in
+  # main and takes sha = main, the SHA that prd already runs. promote-* need their gate job: a
+  # skipped gate skips the promotion.
+  gate-prd:
+    needs: [setup, preflight]
+    if: needs.setup.outputs.env == 'prd'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions: {}
+    environment: promote-prd
+    steps:
+      - name: Record the prd approval
+        run: echo "prd promotion approved"
+
+  promote-stg:
+    needs: [setup, preflight, gate-stg]
+    if: github.event_name == 'workflow_dispatch' && needs.setup.outputs.env == 'stg'
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    uses: VelimirMueller/fleet-workflows/.github/workflows/_deploy-run.yml@v0.0.2
+    with:
+      environment: ${{ needs.setup.outputs.env }}
+      sha: ${{ needs.preflight.outputs.sha }}
+      promote-branch: stage
+      app-client-id: ${{ vars.PROMOTE_APP_CLIENT_ID }}
+      github-environment: stg
+      # No deploy command yet: the promotion only fast-forwards the branch (no host).
+    secrets:
+      PROMOTE_APP_PRIVATE_KEY: ${{ secrets.PROMOTE_APP_PRIVATE_KEY }}
+
+  promote-prd:
+    needs: [setup, preflight, gate-prd]
+    if: github.event_name == 'workflow_dispatch' && needs.setup.outputs.env == 'prd'
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    uses: VelimirMueller/fleet-workflows/.github/workflows/_deploy-run.yml@v0.0.2
+    with:
+      environment: ${{ needs.setup.outputs.env }}
+      sha: ${{ needs.preflight.outputs.sha }}
+      promote-branch: main
+      app-client-id: ${{ vars.PROMOTE_APP_CLIENT_ID }}
+      github-environment: prd
+      # No deploy command yet: the promotion only fast-forwards the branch (no host).
+    secrets:
+      PROMOTE_APP_PRIVATE_KEY: ${{ secrets.PROMOTE_APP_PRIVATE_KEY }}
