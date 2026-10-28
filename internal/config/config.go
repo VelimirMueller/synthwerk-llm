@@ -33,6 +33,10 @@ var Providers = []string{ProviderOllama, ProviderOpenAICompat, ProviderFake}
 // its eval against it, so the name is stable.
 const DefaultAlias = "default"
 
+// DefaultModelAliases is the alias map without SYNTHWERK_LLM_MODEL_ALIASES. The eval
+// (#72) reads it too: a change here changes the model the eval scores.
+const DefaultModelAliases = DefaultAlias + "=qwen3.5:4b"
+
 // DefaultSystemPrompt is the built-in system prompt.
 const DefaultSystemPrompt = "You are the Synthwerk assistant. Answer briefly and in plain text."
 
@@ -118,7 +122,7 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	c.APIKey = key
 
-	c.Aliases, err = aliases(get("MODEL_ALIASES", DefaultAlias+"=qwen3.5:4b"))
+	c.Aliases, err = ParseAliases(get("MODEL_ALIASES", DefaultModelAliases))
 	if err != nil {
 		errs = append(errs, err)
 	}
@@ -201,8 +205,9 @@ func secret(getenv func(string) string, name string) (string, error) {
 	return strings.TrimSpace(string(b)), nil
 }
 
-// aliases parses "default=qwen3.5:4b,small=qwen3.5:0.8b".
-func aliases(s string) (map[string]string, error) {
+// ParseAliases parses "default=qwen3.5:4b,small=qwen3.5:0.8b". The alias "default"
+// must exist.
+func ParseAliases(s string) (map[string]string, error) {
 	out := map[string]string{}
 	for pair := range strings.SplitSeq(s, ",") {
 		pair = strings.TrimSpace(pair)

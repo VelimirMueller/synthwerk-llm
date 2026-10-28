@@ -88,6 +88,12 @@ type wireRequest struct {
 	StreamOptions struct {
 		IncludeUsage bool `json:"include_usage"`
 	} `json:"stream_options"`
+	Temperature *float64 `json:"temperature,omitempty"`
+	Seed        *int     `json:"seed,omitempty"`
+	MaxTokens   int      `json:"max_tokens,omitempty"`
+	// ReasoningEffort "none" turns the thinking trace off on Ollama (qwen3.5). Checked
+	// with Ollama: "think": false is ignored on the OpenAI endpoint.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type wireChunk struct {
@@ -107,6 +113,10 @@ type wireChunk struct {
 func (p *Provider) Chat(ctx context.Context, req provider.Request) (provider.Stream, error) {
 	body := wireRequest{Model: req.Model, Stream: true, Messages: make([]wireMessage, len(req.Messages))}
 	body.StreamOptions.IncludeUsage = true
+	body.Temperature, body.Seed, body.MaxTokens = req.Options.Temperature, req.Options.Seed, req.Options.MaxTokens
+	if req.Options.NoThinking {
+		body.ReasoningEffort = "none"
+	}
 	for i, m := range req.Messages {
 		body.Messages[i] = wireMessage{Role: string(m.Role), Content: m.Text}
 	}

@@ -1,0 +1,162 @@
+# Chat eval of the model alias "default" (#72). It scores the real model on Ollama
+# (CPU, temperature 0, fixed seed, thinking off) against evals/chat/<version> with
+# deterministic checks only, and fails below evals/chat/<version>/thresholds.json.
+# The score, the gate and the speed go to the job summary.
+#
+# When: pull requests and pushes to main that touch the eval, the alias default, the
+# system prompt or a provider adapter (job "changes"), plus a manual run that can
+# score another alias map. Everything else gets "eval / required" green at once.
+# The harness itself (checks, gate, runner with the fake provider) runs on every PR
+# in ci.yml (tests/unit/eval).
+name: eval
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      aliases:
+        description: "SYNTHWERK_LLM_MODEL_ALIASES to score, for example default=qwen3.5:2b. Empty: the code default."
+        required: false
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+env:
+  # Same pin as synthwerk-infra/compose.yaml (service ollama). Bump both together.
+  OLLAMA_IMAGE: ollama/ollama:0.40.1@sha256:69f27594d8127cb43db1edcafa5e2d3cd8f88bdbc54a2cf3ceb11b8d138a24b1
+  EVAL_SET: evals/chat/v1
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      eval: ${{ steps.diff.outputs.eval }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Does the change touch what the eval scores?
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          base=""
+          case "$EVENT" in
+            pull_request) base="$PR_BASE" ;;
+            push) base="$PUSH_BEFORE" ;;
+          esac
+          if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "eval=true" >> "$GITHUB_OUTPUT"
+            echo "No usable base ($EVENT): run the eval."
+            exit 0
+          fi
+          files="$(git diff --name-only "$base" HEAD)"
+          if grep -E '^(evals/|internal/eval/|cmd/eval/|internal/provider/|internal/config/|\.github/workflows/eval\.yml$)' <<<"$files"; then
+            echo "eval=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "eval=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing the eval scores changed."
+          fi
+
+  eval:
+    needs: changes
+    if: needs.changes.outputs.eval == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      SYNTHWERK_LLM_MODEL_ALIASES: ${{ inputs.aliases }}
+      SYNTHWERK_LLM_BASE_URL: http://localhost:11434/v1
+      MODELS_DIR: ${{ github.workspace }}/../ollama-models
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build the eval
+        run: go build -o "$RUNNER_TEMP/eval" ./cmd/eval
+      - name: Model of the alias "default"
+        id: model
+        run: |
+          model="$("$RUNNER_TEMP/eval" -print-model)"
+          echo "Alias default -> $model"
+          echo "name=$model" >> "$GITHUB_OUTPUT"
+      - name: Restore the model cache
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.MODELS_DIR }}
+          key: ollama-models-${{ steps.model.outputs.name }}
+      - name: Start Ollama
+        run: |
+          mkdir -p "$MODELS_DIR"
+          docker run -d --name ollama -p 127.0.0.1:11434:11434 -v "$MODELS_DIR:/root/.ollama" "$OLLAMA_IMAGE"
+          for _ in $(seq 60); do
+            if curl -fsS http://localhost:11434/api/version; then exit 0; fi
+            sleep 1
+          done
+          echo "::error::Ollama did not start"
+          docker logs ollama
+          exit 1
+      - name: Pull the model
+        env:
+          MODEL: ${{ steps.model.outputs.name }}
+        run: |
+          docker exec ollama ollama pull "$MODEL"
+          # The container writes as root; the cache step reads as the runner user.
+          sudo chmod -R a+rX "$MODELS_DIR"
+      - name: Save the model cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.MODELS_DIR }}
+          key: ollama-models-${{ steps.model.outputs.name }}
+      - name: Run the eval
+        run: |
+          echo "Ollama image: \`$OLLAMA_IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+          "$RUNNER_TEMP/eval" -set "$EVAL_SET" -report "$RUNNER_TEMP/eval-report.json"
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: eval-report
+          path: ${{ runner.temp }}/eval-report.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # Stable check name for a ruleset: green when the eval passed or did not need to run.
+  required:
+    if: always()
+    needs: [changes, eval]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Eval passed or was not needed
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          EVAL: ${{ needs.eval.result }}
+        run: |
+          echo "changes: $CHANGES, eval: $EVAL"
+          [[ "$CHANGES" == "success" ]] || exit 1
+          [[ "$EVAL" == "success" || "$EVAL" == "skipped" ]] || exit 1
