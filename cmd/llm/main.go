@@ -1,6 +1,7 @@
 // Command llm is the LLM gateway for the Synthwerk family: conversations per user,
 // answers streamed over SSE from the provider SYNTHWERK_LLM_PROVIDER names, a
-// metadata-only fact per answer on EVT_LLM.
+// metadata-only fact per answer on EVT_LLM. It exports a user's own data
+// (GET /v1/me/export) and deletes it on identity's user.deleted.v1 (EVT_IDENTITY).
 //
 //	llm              run the service
 //	llm healthcheck  exit 0 when /readyz answers 200 (container health check)
@@ -57,6 +58,7 @@ import (
 	"github.com/VelimirMueller/synthwerk-llm/internal/app"
 	"github.com/VelimirMueller/synthwerk-llm/internal/chat"
 	"github.com/VelimirMueller/synthwerk-llm/internal/config"
+	"github.com/VelimirMueller/synthwerk-llm/internal/erasure"
 	"github.com/VelimirMueller/synthwerk-llm/internal/provider/registry"
 	"github.com/VelimirMueller/synthwerk-llm/internal/quota"
 	"github.com/VelimirMueller/synthwerk-llm/internal/store"
@@ -189,6 +191,9 @@ func run(ctx context.Context) error {
 		Source:              source,
 	}, st, prov, quota.Static{UserTokens: cfg.QuotaUserTokens, OrgTokens: cfg.QuotaOrgTokens}, logger) // entitlements replace Static with #31
 
+	// Identity owns EVT_IDENTITY: the consumer waits for it and never creates it.
+	eraser := erasure.New(js, st, logger, erasure.Config{})
+
 	a, err := app.New(app.Deps{
 		DB: db, Log: logger, Chat: chatHandler, Verifier: verifier,
 		NATS: func(context.Context) error {
@@ -197,6 +202,7 @@ func run(ctx context.Context) error {
 			}
 			return nil
 		},
+		Erasure: eraser.Ready,
 	}, app.Config{Version: version, Commit: commit, Env: logOpts.Env})
 	if err != nil {
 		return err
@@ -233,6 +239,7 @@ func run(ctx context.Context) error {
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return relay.Run(gctx) })
+	g.Go(func() error { return eraser.Run(gctx) })
 	g.Go(func() error {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return err
