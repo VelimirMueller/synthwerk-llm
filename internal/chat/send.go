@@ -45,6 +45,8 @@ type answer struct {
 	result provider.Result
 	ttft   time.Duration
 	pieces int
+	// called: the provider took the request (input tokens are spent).
+	called bool
 }
 
 func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
@@ -98,27 +100,68 @@ func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer releaseStream()
-	if err := h.guard.Check(r.Context(), p, alias); err != nil {
-		if errors.Is(err, quota.ErrExhausted) {
-			problem.Write(w, r, http.StatusTooManyRequests, "quota_exhausted", "", 60)
-			return
-		}
+	limits, err := h.quota.Limits(r.Context(), p)
+	if err != nil {
 		h.internal(w, r, "llm.quota.check_failed", err)
 		return
 	}
 
-	turn, err := h.store.StartTurn(r.Context(), o, convID, req.Content)
+	// The booking needs the history, which the store reads in the turn's
+	// transaction: build the model messages there and book their estimate plus the
+	// answer reserve.
+	var msgs []provider.Message
+	var inputEstimate int
+	now := time.Now()
+	turn, err := h.store.StartTurn(r.Context(), o, convID, req.Content, store.Quota{
+		Limits: limits,
+		Now:    now,
+		Tokens: func(past []store.Message) int64 {
+			msgs = h.history(past, req.Content)
+			inputEstimate = provider.EstimateInput(msgs)
+			return int64(inputEstimate) + int64(h.cfg.QuotaReserveTokens)
+		},
+	})
 	if errors.Is(err, store.ErrNotFound) {
 		problem.Write(w, r, http.StatusNotFound, problem.CodeNotFound, "", 0)
+		return
+	}
+	if exceeded, ok := errors.AsType[*quota.ExceededError](err); ok {
+		h.log.LogAttrs(r.Context(), slog.LevelInfo, "quota exhausted",
+			slog.String("event.name", "llm.quota.exhausted"),
+			slog.String("synthwerk.quota.scope", string(exceeded.Scope)),
+			slog.Int64("synthwerk.quota.limit", exceeded.Limit))
+		problem.WriteQuota(w, r, problem.Quota{
+			Scope: string(exceeded.Scope), Unit: "tokens", Limit: exceeded.Limit, ResetsAt: exceeded.ResetsAt,
+		}, exceeded.RetryAfter(now))
 		return
 	}
 	if err != nil {
 		h.internal(w, r, "llm.message.start_failed", err)
 		return
 	}
+	// The store calls Tokens exactly once (store.Quota). This only guards a Store
+	// that breaks the contract: the model still gets its messages.
+	if msgs == nil {
+		msgs = h.history(turn.History, req.Content)
+		inputEstimate = provider.EstimateInput(msgs)
+	}
 
-	ans := h.stream(w, r, turn, provider.Request{Model: model, Messages: h.history(turn.History, req.Content)}, alias)
-	h.finish(r.Context(), p, o, convID, turn.AssistantMessageID, alias, start, ans)
+	ans := h.stream(w, r, turn, provider.Request{Model: model, Messages: msgs}, alias)
+	h.finish(r.Context(), p, o, convID, turn.AssistantMessageID, alias, start, ans, inputEstimate)
+}
+
+// charge is what an answer costs the quota. A completed answer costs the provider's
+// counts. An answer that ended early costs the input estimate and the partial
+// answer, once the provider took the request. Refused or never called: nothing.
+func charge(ans answer, inputEstimate int) int64 {
+	switch {
+	case ans.status == store.StatusCompleted:
+		return int64(ans.result.Usage.InputTokens) + int64(ans.result.Usage.OutputTokens)
+	case ans.called:
+		return int64(inputEstimate) + int64(provider.EstimateTokens(string(ans.text)))
+	default:
+		return 0
+	}
 }
 
 // stream runs the model call and writes the SSE answer. It never returns an error:
@@ -148,6 +191,7 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, turn store.Turn
 		problem.Write(w, r, http.StatusServiceUnavailable, problem.CodeModelUnavailable, "", 5)
 		return ans
 	}
+	ans.called = true
 	defer func() { _ = st.Close() }()
 
 	sw, err := sse.Start(w, turn.AssistantMessageID)
@@ -246,7 +290,7 @@ func (*Handler) ended(r *http.Request, sw *sse.Writer, ans answer) answer {
 }
 
 // finish stores the end state and the event, also after a client abort.
-func (h *Handler) finish(rctx context.Context, p *auth.Principal, o store.Owner, convID, msgID, alias string, start time.Time, ans answer) {
+func (h *Handler) finish(rctx context.Context, p *auth.Principal, o store.Owner, convID, msgID, alias string, start time.Time, ans answer, inputEstimate int) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(rctx), finishTimeout)
 	defer cancel()
 
@@ -277,6 +321,7 @@ func (h *Handler) finish(rctx context.Context, p *auth.Principal, o store.Owner,
 		err = h.store.Finish(ctx, o, store.Final{
 			MessageID: msgID, Content: string(ans.text), Status: ans.status,
 			TokensIn: usage.InputTokens, TokensOut: usage.OutputTokens,
+			Charge: charge(ans, inputEstimate),
 		}, ev)
 	}
 	attrs := []slog.Attr{

@@ -31,6 +31,16 @@ func TestLoadDefaults(t *testing.T) {
 	if c.MaxInputChars != 8000 || c.MaxStreamsPerOwner != 2 || c.ProviderConcurrency != 1 || c.StreamTimeout.Seconds() != 120 {
 		t.Fatalf("limits: %+v", c)
 	}
+	if c.QuotaUserTokens != 50000 || c.QuotaOrgTokens != 500000 || c.QuotaReserveTokens != 1024 {
+		t.Fatalf("quota: user %d org %d reserve %d", c.QuotaUserTokens, c.QuotaOrgTokens, c.QuotaReserveTokens)
+	}
+}
+
+func TestLoadQuotaZeroMeansNoLimit(t *testing.T) {
+	c, err := config.Load(envOf(map[string]string{"SYNTHWERK_LLM_QUOTA_USER_TOKENS": "0", "SYNTHWERK_LLM_QUOTA_ORG_TOKENS": "0"}))
+	if err != nil || c.QuotaUserTokens != 0 || c.QuotaOrgTokens != 0 {
+		t.Fatalf("got user %d org %d, err %v", c.QuotaUserTokens, c.QuotaOrgTokens, err)
+	}
 }
 
 func TestLoadRefuses(t *testing.T) {
@@ -53,6 +63,12 @@ func TestLoadRefuses(t *testing.T) {
 		"unknown platform env":    {map[string]string{"SYNTHWERK_PLATFORM_ENV": "qa"}, "SYNTHWERK_PLATFORM_ENV"},
 		"no nats url":             {map[string]string{"SYNTHWERK_LLM_NATS_URL": ""}, "NATS_URL is required"},
 		"unreadable api key file": {map[string]string{"SYNTHWERK_LLM_API_KEY_FILE": "/does/not/exist"}, "API_KEY_FILE"},
+		"negative user quota":     {map[string]string{"SYNTHWERK_LLM_QUOTA_USER_TOKENS": "-1"}, "QUOTA_USER_TOKENS must be an integer"},
+		"org quota not a number":  {map[string]string{"SYNTHWERK_LLM_QUOTA_ORG_TOKENS": "lots"}, "QUOTA_ORG_TOKENS must be an integer"},
+		"quota above contract":    {map[string]string{"SYNTHWERK_LLM_QUOTA_ORG_TOKENS": "1000000000001"}, "QUOTA_ORG_TOKENS must be an integer"},
+		"user quota at reserve":   {map[string]string{"SYNTHWERK_LLM_QUOTA_USER_TOKENS": "1024"}, "QUOTA_USER_TOKENS must be 0 or above"},
+		"org quota below reserve": {map[string]string{"SYNTHWERK_LLM_QUOTA_ORG_TOKENS": "2000", "SYNTHWERK_LLM_QUOTA_RESERVE_TOKENS": "4000"}, "QUOTA_ORG_TOKENS must be 0 or above"},
+		"zero reserve":            {map[string]string{"SYNTHWERK_LLM_QUOTA_RESERVE_TOKENS": "0"}, "QUOTA_RESERVE_TOKENS"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -35,7 +35,7 @@ func (s panicStore) ConversationAlias(context.Context, store.Owner, string) (str
 	return "", nil
 }
 
-func (s panicStore) StartTurn(context.Context, store.Owner, string, string) (store.Turn, error) {
+func (s panicStore) StartTurn(context.Context, store.Owner, string, string, store.Quota) (store.Turn, error) {
 	s.fail()
 	return store.Turn{}, nil
 }

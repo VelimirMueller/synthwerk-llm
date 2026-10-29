@@ -5,8 +5,10 @@
 //  1. auth.Middleware: no valid token → 401 before this package runs.
 //  2. origin claim differs from the Origin header → 403.
 //  3. body not valid → 400; conversation not the caller's → 404; input too long → 413.
-//  4. stream slot of the owner → 429; quota guard → 429 (no-op in M2).
-//  5. store the turn, wait for a model slot (503), call the provider.
+//  4. stream slot of the owner → 429; quota limits read (internal/quota).
+//  5. store the turn and book the quota in one transaction: over quota → 429
+//     quota_exhausted, nothing stored. Wait for a model slot (503), call the provider.
+//  6. finish: store the end state and settle the booking with the real tokens.
 //
 // Logs carry metadata only: never the prompt, the answer or provider error text.
 package chat
@@ -34,7 +36,7 @@ type Store interface {
 	CreateConversation(ctx context.Context, o store.Owner, alias string) (store.Conversation, error)
 	GetConversation(ctx context.Context, o store.Owner, id string) (store.Conversation, error)
 	ConversationAlias(ctx context.Context, o store.Owner, id string) (string, error)
-	StartTurn(ctx context.Context, o store.Owner, convID, text string) (store.Turn, error)
+	StartTurn(ctx context.Context, o store.Owner, convID, text string, q store.Quota) (store.Turn, error)
 	Finish(ctx context.Context, o store.Owner, f store.Final, ev cloudevents.Event) error
 }
 
@@ -57,6 +59,9 @@ type Config struct {
 	QueueTimeout        time.Duration
 	// Heartbeat is the SSE ping interval. Default 15 s.
 	Heartbeat time.Duration
+	// QuotaReserveTokens is booked for the answer on top of the input estimate.
+	// Default 1024.
+	QuotaReserveTokens int
 	// Source is the CloudEvents source, /synthwerk/llm/<env>.
 	Source string
 }
@@ -66,7 +71,7 @@ type Handler struct {
 	cfg      Config
 	store    Store
 	provider provider.Provider
-	guard    quota.Guard
+	quota    quota.Source
 	log      *slog.Logger
 
 	slots chan struct{}
@@ -74,10 +79,10 @@ type Handler struct {
 	open  map[store.Owner]int
 }
 
-// New returns the handler. guard nil: quota.None.
-func New(cfg Config, st Store, p provider.Provider, guard quota.Guard, logger *slog.Logger) *Handler {
-	if guard == nil {
-		guard = quota.None{}
+// New returns the handler. limits nil: quota.None (usage counted, no limit).
+func New(cfg Config, st Store, p provider.Provider, limits quota.Source, logger *slog.Logger) *Handler {
+	if limits == nil {
+		limits = quota.None{}
 	}
 	if cfg.Heartbeat <= 0 {
 		cfg.Heartbeat = 15 * time.Second
@@ -97,8 +102,11 @@ func New(cfg Config, st Store, p provider.Provider, guard quota.Guard, logger *s
 	if cfg.QueueTimeout <= 0 {
 		cfg.QueueTimeout = 10 * time.Second
 	}
+	if cfg.QuotaReserveTokens <= 0 {
+		cfg.QuotaReserveTokens = 1024
+	}
 	return &Handler{
-		cfg: cfg, store: st, provider: p, guard: guard, log: logger,
+		cfg: cfg, store: st, provider: p, quota: limits, log: logger,
 		slots: make(chan struct{}, cfg.ProviderConcurrency),
 		open:  map[store.Owner]int{},
 	}
