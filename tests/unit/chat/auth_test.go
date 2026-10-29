@@ -45,6 +45,11 @@ func (s panicStore) Finish(context.Context, store.Owner, store.Final, cloudevent
 	return nil
 }
 
+func (s panicStore) Export(context.Context, string, store.ExportSink) error {
+	s.fail()
+	return nil
+}
+
 // panicProvider fails the test when the model is called.
 type panicProvider struct{ t *testing.T }
 
@@ -82,6 +87,7 @@ func TestSendWithoutValidTokenIsRefusedBeforeAnyModelCall(t *testing.T) {
 			{http.MethodPost, convPath},
 			{http.MethodPost, "/v1/conversations"},
 			{http.MethodGet, "/v1/conversations/0199f3b0-1a2c-7c3d-8e4f-5a6b7c8d9e10"},
+			{http.MethodGet, "/v1/me/export"},
 		}
 		for name, tok := range cases {
 			for _, rt := range routes {
