@@ -13,7 +13,7 @@
       "key": "start",
       "index": "02",
       "title": "QUICK START",
-      "caption": "NOTHING TO RUN. YET.",
+      "caption": "CLONE. TEST. RUN.",
       "art": "strip-flagship-2"
     },
     {
@@ -34,7 +34,7 @@
       "key": "status",
       "index": "05",
       "title": "STATUS",
-      "caption": "HONEST. NO CODE YET.",
+      "caption": "HONEST. IN PROGRESS.",
       "art": "strip-flagship-5"
     }
   ],
@@ -57,8 +57,8 @@
           "label": "PROVIDERS NAMED"
         },
         {
-          "value": "0",
-          "label": "CODE ON MAIN"
+          "value": "1",
+          "label": "CHAT EVAL IN CI"
         }
       ]
     },
@@ -88,8 +88,8 @@
       "lines": [
         "$ gh repo clone VelimirMueller/synthwerk-llm",
         "$ cd synthwerk-llm",
-        "$ git checkout legacy-final",
-        "# the old Flask + GPT4All WebSocket demo"
+        "$ just test",
+        "# unit, contract and integration tests"
       ]
     },
     {
@@ -124,28 +124,28 @@
       "rows": [
         {
           "label": "Rewrite",
-          "value": "planned, epic E3",
+          "value": "in progress, epic E3",
           "state": "wip"
         },
         {
-          "label": "Old code",
-          "value": "tag legacy-final",
+          "label": "Chat over SSE",
+          "value": "on main",
           "state": "ok"
         },
         {
           "label": "Providers",
-          "value": "Ollama, Anthropic, …",
-          "state": "planned"
-        },
-        {
-          "label": "Streaming",
-          "value": "SSE",
-          "state": "planned"
-        },
-        {
-          "label": "Branching",
-          "value": "main→dev, tag→stg, digest→prd",
+          "value": "ollama, openai_compat, fake",
           "state": "ok"
+        },
+        {
+          "label": "Quota",
+          "value": "planned, synthwerk#33",
+          "state": "planned"
+        },
+        {
+          "label": "Old code",
+          "value": "tag legacy-final",
+          "state": "off"
         }
       ]
     },
@@ -153,7 +153,7 @@
       "key": "lead",
       "type": "lead",
       "title": "ABOUT",
-      "text": "**synthwerk-llm** is the LLM gateway for the Synthwerk family. One API for chat and text tasks, scoped access, audited streaming. This repo is being rewritten. There is no code on main. It is very good at waiting."
+      "text": "**synthwerk-llm** is the LLM gateway for the Synthwerk family. One API for chat and text tasks, scoped access, audited streaming. The rewrite is in progress: `main` holds the Go gateway."
     },
     {
       "key": "what",
@@ -182,8 +182,8 @@
       "columns": 3,
       "items": [
         {
-          "lead": "No code on main",
-          "text": "There is no code to run on main yet. Tag `legacy-final` holds the old demo."
+          "lead": "Go on main",
+          "text": "`main` holds the Go gateway. Tag `legacy-final` holds the old Flask demo."
         },
         {
           "lead": "Ecosystem map",
@@ -288,7 +288,7 @@
       "items": [
         {
           "lead": "Tests",
-          "text": "There are no tests. There is no code to test."
+          "text": "`just test` runs unit, contract and integration tests. A chat eval runs in CI."
         },
         {
           "lead": "Changelog",
@@ -340,7 +340,7 @@
       "type": "footer",
       "studio": "VM. studio / flagship",
       "text": "open source · look per vm-brand playbook · MIT © 2026 Velimir Mueller",
-      "eof": "-- EOF -- no code. yet. --"
+      "eof": "-- EOF -- now with code. --"
     }
   ],
   "readme": {
@@ -359,7 +359,7 @@
         "code": [
           [
             "bash",
-            "gh repo clone VelimirMueller/synthwerk-llm\ncd synthwerk-llm\ngit checkout legacy-final   # the old Flask + GPT4All WebSocket demo"
+            "gh repo clone VelimirMueller/synthwerk-llm\ncd synthwerk-llm\njust test   # unit, contract and integration tests"
           ]
         ]
       },

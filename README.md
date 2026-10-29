@@ -8,16 +8,22 @@
 <p>
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="assets/readme/lead-v2-light.svg">
-  <img alt="synthwerk-llm is the LLM gateway for the Synthwerk family. One API for chat and text tasks, scoped access, audited streaming. This repo is being rewritten. There is no code on main. It is very good at waiting." src="assets/readme/lead-v2-dark.svg" width="100%">
+  <img alt="synthwerk-llm is the LLM gateway for the Synthwerk family. One API for chat and text tasks, scoped access, audited streaming. The rewrite is in progress: main holds the Go gateway." src="assets/readme/lead-v2-dark.svg" width="100%">
 </picture>
 </p>
 
 <p>
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="assets/readme/stats-v2-light.svg">
-  <img alt="1 API, CHAT AND TEXT. 3 SCOPES: ADMIN, TENANT, USER. 2 PROVIDERS NAMED. 0 CODE ON MAIN" src="assets/readme/stats-v2-dark.svg" width="100%">
+  <img alt="1 API, CHAT AND TEXT. 3 SCOPES: ADMIN, TENANT, USER. 2 PROVIDERS NAMED. 1 CHAT EVAL IN CI" src="assets/readme/stats-v2-dark.svg" width="100%">
 </picture>
 </p>
+
+## Status
+
+- **Decision:** the rewrite happens in this repo. No restore from `legacy-final`, no archive.
+- **Today:** rewrite in progress, epic E3 ([synthwerk#32](https://github.com/VelimirMueller/synthwerk/issues/32)). `main` holds the Go gateway: chat over SSE, provider from the env, chat eval in CI.
+- **Old code:** tag `legacy-final` holds the Flask + GPT4All demo, for history only.
 
 <br>
 
@@ -42,13 +48,13 @@
 <br>
 
 <p>
-<img alt="02 QUICK START. NOTHING TO RUN. YET." src="assets/readme/divider-start-v2.svg" width="100%">
+<img alt="02 QUICK START. CLONE. TEST. RUN." src="assets/readme/divider-start-v2.svg" width="100%">
 </p>
 
 <p>
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="assets/readme/start-v2-light.svg">
-  <img alt="Terminal: $ gh repo clone VelimirMueller/synthwerk-llm | $ cd synthwerk-llm | $ git checkout legacy-final | # the old Flask + GPT4All WebSocket demo" src="assets/readme/start-v2-dark.svg" width="100%">
+  <img alt="Terminal: $ gh repo clone VelimirMueller/synthwerk-llm | $ cd synthwerk-llm | $ just test | # unit, contract and integration tests" src="assets/readme/start-v2-dark.svg" width="100%">
 </picture>
 </p>
 
@@ -58,7 +64,7 @@
 ```bash
 gh repo clone VelimirMueller/synthwerk-llm
 cd synthwerk-llm
-git checkout legacy-final   # the old Flask + GPT4All WebSocket demo
+just test   # unit, contract and integration tests
 ```
 
 </details>
@@ -66,7 +72,7 @@ git checkout legacy-final   # the old Flask + GPT4All WebSocket demo
 <p>
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="assets/readme/startnotes-v2-light.svg">
-  <img alt="No code on main: There is no code to run on main yet. Tag legacy-final holds the old demo. Ecosystem map: The ecosystem map is in synthwerk (https://github.com/VelimirMueller/synthwerk). Blueprint: Shared CI, lint configs and templates come from synthwerk-blueprint (https://github.com/VelimirMueller/synthwerk-blueprint)" src="assets/readme/startnotes-v2-dark.svg" width="100%">
+  <img alt="Go on main: main holds the Go gateway. Tag legacy-final holds the old Flask demo. Ecosystem map: The ecosystem map is in synthwerk (https://github.com/VelimirMueller/synthwerk). Blueprint: Shared CI, lint configs and templates come from synthwerk-blueprint (https://github.com/VelimirMueller/synthwerk-blueprint)" src="assets/readme/startnotes-v2-dark.svg" width="100%">
 </picture>
 </p>
 
@@ -145,20 +151,20 @@ go run ./cmd/llm
 <br>
 
 <p>
-<img alt="05 STATUS. HONEST. NO CODE YET." src="assets/readme/divider-status-v2.svg" width="100%">
+<img alt="05 STATUS. HONEST. IN PROGRESS." src="assets/readme/divider-status-v2.svg" width="100%">
 </p>
 
 <p>
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="assets/readme/status-v2-light.svg">
-  <img alt="Rewrite: planned, epic E3. Old code: tag legacy-final. Providers: Ollama, Anthropic, …. Streaming: SSE. Branching: main→dev, tag→stg, digest→prd" src="assets/readme/status-v2-dark.svg" width="100%">
+  <img alt="Rewrite: in progress, epic E3. Chat over SSE: on main. Providers: ollama, openai_compat, fake. Quota: planned, synthwerk#33. Old code: tag legacy-final" src="assets/readme/status-v2-dark.svg" width="100%">
 </picture>
 </p>
 
 <p>
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="assets/readme/honest-v2-light.svg">
-  <img alt="Tests: There are no tests. There is no code to test. Changelog: There is no CHANGELOG yet. Stack: Go 1.27. Licensed under MIT" src="assets/readme/honest-v2-dark.svg" width="100%">
+  <img alt="Tests: just test runs unit, contract and integration tests. A chat eval runs in CI. Changelog: There is no CHANGELOG yet. Stack: Go 1.27. Licensed under MIT" src="assets/readme/honest-v2-dark.svg" width="100%">
 </picture>
 </p>
 
@@ -170,6 +176,6 @@ go run ./cmd/llm
 <p>
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="assets/readme/footer-v2-light.svg">
-  <img alt="VM. studio / flagship · open source · look per vm-brand playbook · MIT © 2026 Velimir Mueller · -- EOF -- no code. yet. --" src="assets/readme/footer-v2-dark.svg" width="100%">
+  <img alt="VM. studio / flagship · open source · look per vm-brand playbook · MIT © 2026 Velimir Mueller · -- EOF -- now with code. --" src="assets/readme/footer-v2-dark.svg" width="100%">
 </picture>
 </p>
