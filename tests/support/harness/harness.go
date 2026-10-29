@@ -25,6 +25,7 @@ import (
 	"github.com/VelimirMueller/synthwerk-llm/internal/chat"
 	"github.com/VelimirMueller/synthwerk-llm/internal/provider"
 	"github.com/VelimirMueller/synthwerk-llm/internal/provider/fake"
+	"github.com/VelimirMueller/synthwerk-llm/internal/quota"
 	"github.com/VelimirMueller/synthwerk-llm/tests/support/sse"
 )
 
@@ -66,6 +67,8 @@ type Options struct {
 	Provider provider.Provider
 	// Chat overrides fields of the default chat config when set.
 	Chat func(*chat.Config)
+	// Quota is the limit source. Nil: quota.None.
+	Quota quota.Source
 }
 
 // H is a running gateway.
@@ -115,7 +118,7 @@ func New(t *testing.T, st chat.Store, o Options) *H {
 	if db == nil {
 		db = NopDB{}
 	}
-	h.App, err = app.New(app.Deps{DB: db, Log: logger, Chat: chat.New(cfg, st, p, nil, logger), Verifier: v}, app.Config{Version: "0.0.0", Commit: "0000000", Env: "ci"})
+	h.App, err = app.New(app.Deps{DB: db, Log: logger, Chat: chat.New(cfg, st, p, o.Quota, logger), Verifier: v}, app.Config{Version: "0.0.0", Commit: "0000000", Env: "ci"})
 	if err != nil {
 		t.Fatal(err)
 	}

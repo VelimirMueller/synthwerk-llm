@@ -480,7 +480,7 @@ func TestSweepMarksStuckAnswersFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.st.StartTurn(t.Context(), o, c.ID, "hi"); err != nil {
+	if _, err := r.st.StartTurn(t.Context(), o, c.ID, "hi", store.Quota{Now: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := r.st.SweepStreaming(t.Context(), time.Hour); err != nil || n != 0 {

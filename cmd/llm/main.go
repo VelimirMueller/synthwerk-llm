@@ -18,6 +18,8 @@
 //	SYNTHWERK_LLM_OIDC_ISSUER      token issuer (required)
 //	SYNTHWERK_LLM_OIDC_AUDIENCE    accepted audiences, comma list (required)
 //	SYNTHWERK_LLM_JWKS_URL         key set URL; empty = OIDC discovery on the issuer
+//	SYNTHWERK_LLM_QUOTA_USER_TOKENS  tokens per UTC day per user in an org, default 50000 (0 = no limit)
+//	SYNTHWERK_LLM_QUOTA_ORG_TOKENS   tokens per UTC day per org, default 500000 (0 = no limit)
 //	More limits: internal/config.
 //	SYNTHWERK_LLM_LOG_LEVEL        DEBUG, INFO (default), WARN, ERROR
 //	SYNTHWERK_LLM_LOG_FORMAT       json (default) or console (local only)
@@ -183,8 +185,9 @@ func run(ctx context.Context) error {
 		StreamTimeout:       cfg.StreamTimeout,
 		ProviderConcurrency: cfg.ProviderConcurrency,
 		QueueTimeout:        cfg.QueueTimeout,
+		QuotaReserveTokens:  cfg.QuotaReserveTokens,
 		Source:              source,
-	}, st, prov, quota.None{}, logger) // #33 replaces the no-op guard
+	}, st, prov, quota.Static{UserTokens: cfg.QuotaUserTokens, OrgTokens: cfg.QuotaOrgTokens}, logger) // entitlements replace Static with #31
 
 	a, err := app.New(app.Deps{
 		DB: db, Log: logger, Chat: chatHandler, Verifier: verifier,

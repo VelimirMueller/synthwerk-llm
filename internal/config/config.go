@@ -37,6 +37,16 @@ const DefaultAlias = "default"
 // (#72) reads it too: a change here changes the model the eval scores.
 const DefaultModelAliases = DefaultAlias + "=qwen3.5:4b"
 
+// Quota defaults: tokens per UTC day. Placeholders for the free plan until identity
+// serves entitlements (#31).
+const (
+	DefaultQuotaUserTokens    = 50000
+	DefaultQuotaOrgTokens     = 500000
+	DefaultQuotaReserveTokens = 1024
+	// maxQuotaTokens is the contract maximum of QuotaExceeded.limit.
+	maxQuotaTokens = 1_000_000_000_000
+)
+
 // DefaultSystemPrompt is the built-in system prompt.
 const DefaultSystemPrompt = "You are the Synthwerk assistant. Answer briefly and in plain text."
 
@@ -70,6 +80,13 @@ type Config struct {
 	QueueTimeout time.Duration
 	// MaxContextChars bounds the history sent to the model (newest turns win).
 	MaxContextChars int
+	// QuotaUserTokens and QuotaOrgTokens are tokens per UTC day for one user in an
+	// org and for the whole org. 0: no limit. The source until identity serves
+	// entitlements (#31).
+	QuotaUserTokens int64
+	QuotaOrgTokens  int64
+	// QuotaReserveTokens is booked for each answer on top of the input estimate.
+	QuotaReserveTokens int
 	// OIDCIssuer is the token issuer (the iss claim).
 	OIDCIssuer string
 	// OIDCAudiences are the accepted aud values.
@@ -137,6 +154,7 @@ func Load(getenv func(string) string) (Config, error) {
 		{"MAX_STREAMS_PER_OWNER", 2, 1, &c.MaxStreamsPerOwner},
 		{"PROVIDER_CONCURRENCY", 1, 1, &c.ProviderConcurrency},
 		{"MAX_CONTEXT_CHARS", 24000, 100, &c.MaxContextChars},
+		{"QUOTA_RESERVE_TOKENS", DefaultQuotaReserveTokens, 1, &c.QuotaReserveTokens},
 	}
 	for _, i := range ints {
 		v, err := strconv.Atoi(get(i.name, strconv.Itoa(i.def)))
@@ -144,6 +162,26 @@ func Load(getenv func(string) string) (Config, error) {
 			errs = append(errs, fmt.Errorf("%s must be an integer >= %d", env.Key(Service, i.name), i.min))
 		}
 		*i.dst = v
+	}
+	// After the ints: the check below needs QuotaReserveTokens.
+	quotas := []struct {
+		name string
+		def  int64
+		dst  *int64
+	}{
+		{"QUOTA_USER_TOKENS", DefaultQuotaUserTokens, &c.QuotaUserTokens},
+		{"QUOTA_ORG_TOKENS", DefaultQuotaOrgTokens, &c.QuotaOrgTokens},
+	}
+	for _, q := range quotas {
+		v, err := strconv.ParseInt(get(q.name, strconv.FormatInt(q.def, 10)), 10, 64)
+		switch {
+		case err != nil || v < 0 || v > maxQuotaTokens:
+			errs = append(errs, fmt.Errorf("%s must be an integer from 0 (no limit) to %d", env.Key(Service, q.name), int64(maxQuotaTokens)))
+		case v > 0 && v <= int64(c.QuotaReserveTokens):
+			// A limit at or below the reserve would refuse every send.
+			errs = append(errs, fmt.Errorf("%s must be 0 or above %s", env.Key(Service, q.name), env.Key(Service, "QUOTA_RESERVE_TOKENS")))
+		}
+		*q.dst = v
 	}
 	if c.MaxInputChars > 8000 {
 		errs = append(errs, fmt.Errorf("%s must be <= 8000 (contract limit)", env.Key(Service, "MAX_INPUT_CHARS")))
