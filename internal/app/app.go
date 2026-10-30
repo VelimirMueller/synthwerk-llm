@@ -16,6 +16,7 @@ import (
 	"github.com/VelimirMueller/synthwerk-contracts/go/kit/health"
 	kitlog "github.com/VelimirMueller/synthwerk-contracts/go/kit/log"
 
+	"github.com/VelimirMueller/synthwerk-llm/internal/aisettings"
 	"github.com/VelimirMueller/synthwerk-llm/internal/chat"
 	"github.com/VelimirMueller/synthwerk-llm/internal/problem"
 )
@@ -44,6 +45,8 @@ type Deps struct {
 	Log      *slog.Logger
 	Chat     *chat.Handler
 	Verifier *auth.Verifier
+	// Settings serves /v1/ai-settings (#39). Nil: no settings routes.
+	Settings *aisettings.Handler
 	// NATS reports the bus connection for /readyz. Nil: no check.
 	NATS func(ctx context.Context) error
 	// Erasure reports the user.deleted consumer for /readyz (not critical). Nil: no check.
@@ -85,6 +88,12 @@ func New(d Deps, cfg Config) (*App, error) {
 			return nil, errors.New("app: the chat routes need a token verifier")
 		}
 		d.Chat.Register(mux, func(next http.Handler) http.Handler { return auth.Middleware(d.Verifier, next) })
+	}
+	if d.Settings != nil {
+		if d.Verifier == nil {
+			return nil, errors.New("app: the settings routes need a token verifier")
+		}
+		d.Settings.Register(mux, func(next http.Handler) http.Handler { return auth.Middleware(d.Verifier, next) })
 	}
 	// The log line sits inside the span. Probes create no span. Recover sits inside
 	// the log line, so a panic still logs one request line with status 500.

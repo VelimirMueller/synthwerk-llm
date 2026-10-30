@@ -57,12 +57,17 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		problem.Write(w, r, http.StatusBadRequest, problem.CodeInvalidRequest, "The body is not a valid request.", 0)
 		return
 	}
-	alias := h.cfg.DefaultAlias
+	ap, err := h.applied(r.Context(), o)
+	if err != nil {
+		h.internal(w, r, "llm.conversation.create_failed", err)
+		return
+	}
+	alias := ap.DefaultModel
 	if req.Model != nil {
 		alias = *req.Model
 	}
-	if _, known := h.cfg.Aliases[alias]; !known {
-		problem.Write(w, r, http.StatusBadRequest, problem.CodeInvalidRequest, "model is not a known alias.", 0)
+	if !ap.Allows(alias) {
+		problem.Write(w, r, http.StatusBadRequest, problem.CodeInvalidRequest, "model is not an alias this org allows.", 0)
 		return
 	}
 	c, err := h.store.CreateConversation(r.Context(), o, alias)

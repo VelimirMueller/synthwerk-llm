@@ -1,4 +1,4 @@
-# LLM gateway (chat slice, M2 #32; quotas #33; own data #41)
+# LLM gateway (chat slice, M2 #32; quotas #33; own data #41; AI settings #39)
 
 > - A signed-in user creates a conversation, sends a message and gets the answer token by token as Server-Sent Events.
 > - The model comes from `SYNTHWERK_LLM_PROVIDER` (`ollama`, `openai_compat`, `fake`). No silent fallback.
@@ -8,6 +8,7 @@
 > - Every finished answer emits `dev.synthwerk.llm.message.completed.v1` on the stream `EVT_LLM` (kit outbox).
 > - Tokens count per user and per org in a UTC day. Over quota: 429 `quota_exhausted` with the scope and the reset, no model call.
 > - A user exports the own rows of every org with `GET /v1/me/export`. When identity emits `dev.synthwerk.identity.user.deleted.v1`, llm deletes them.
+> - An owner or admin sets the AI settings of the org with `/v1/ai-settings`: model choice, system prompt, input limit, token cap per user, temperature. Every create and send of the org uses them. They stay inside the service aliases and the org's plan (#39).
 
 ## API
 
@@ -19,13 +20,15 @@ Contract: `synthwerk-contracts/openapi/llm/openapi.yaml`. All routes need `Autho
 | GET | `/v1/conversations/{id}` | 200 with messages, oldest first. Another owner's id: 404, same body as an unknown id. |
 | POST | `/v1/conversations/{id}/messages` | 200 `text/event-stream`: `delta`… `usage` `done`, or `error`. |
 | GET | `/v1/me/export` | 200 `LlmExport`: every conversation, message and own quota row of the token `sub`, in every org. Widget token: 403. |
+| GET | `/v1/ai-settings` | 200 `AiSettings` of the token's org with its `bounds`. Owner or admin only. |
+| PUT | `/v1/ai-settings` | 200 `AiSettings` after a full replace. `version` must be the one read (409 `version_conflict`). |
 | GET | `/healthz`, `/readyz` | Kit health. `/readyz` checks `postgres`, `nats` (critical), `jwks` and `erasure` (degraded only). |
 
 Refusal order of a send. The model call is last:
 
 1. Token (kit `auth.Middleware`, JWKS) → 401 `unauthenticated`.
 2. `synthwerk:origin` claim differs from `Origin` → 403 `forbidden`.
-3. Body → 400 `invalid_request`. Conversation of another owner → 404. Over `MAX_INPUT_CHARS` → 413 `input_too_large`.
+3. Body → 400 `invalid_request`. Conversation of another owner → 404. Read the org's AI settings: a model the org does not allow → 400; over the org's `max_input_chars` (at most `MAX_INPUT_CHARS`) → 413 `input_too_large`.
 4. More than `MAX_STREAMS_PER_OWNER` open streams → 429 `too_many_streams`. Read the quota limits.
 5. Store the turn and book the quota in one transaction. Over quota → 429 `quota_exhausted`, nothing stored. Wait up to `QUEUE_TIMEOUT` for a model slot → 503 `model_unavailable`. Call the provider.
 
@@ -67,11 +70,37 @@ Erase, consumer of `dev.synthwerk.identity.user.deleted.v1` (`internal/erasure`)
 - Subject `evt.identity.user.deleted.v1`, stream `EVT_IDENTITY`. Identity owns and creates the stream; llm never does. Stream missing: retry with backoff (1 s … 1 min), WARN `llm.erasure.waiting`, the service keeps running, `/readyz` check `erasure` is degraded.
 - Durable consumer `llm-user-deleted` (all replicas share it): `DeliverAll`, explicit ack, `AckWait` 30 s, `MaxAckPending` 16, `MaxDeliver` -1. An erase is a legal duty, so a failing event comes back until it succeeds.
 - Parse: CloudEvent envelope (kit `Validate`), type, data strict (no unknown field), `user_sub` `^[A-Za-z0-9_-]{1,128}$`, `deleted_orgs` present, at most 100, each `org_id` a UUID and `zitadel_org_id` `^[A-Za-z0-9_-]{1,64}$`.
-- One transaction: delete the user's messages, conversations and own quota rows in every org, plus the org quota rows (`owner_id = ''`) of each `deleted_orgs[].zitadel_org_id`. It sets only `synthwerk.erase_owner` and `synthwerk.erase_orgs`; policy `erase` allows `DELETE` of exactly these rows.
+- One transaction: delete the user's messages, conversations and own quota rows in every org, plus the org quota rows (`owner_id = ''`) and the AI settings of each `deleted_orgs[].zitadel_org_id`. It sets only `synthwerk.erase_owner` and `synthwerk.erase_orgs`; policy `erase` allows `DELETE` of exactly these rows.
 - Ack after the commit. Database error: Nak with a delay that doubles per delivery (1 s … 1 min). Malformed: Term, WARN `llm.erasure.rejected` (names the rule, not the value).
 - Idempotent: a repeat deletes nothing and acks.
 - Logs: event id and row counts (`llm.erasure.done`). Never the sub, never content.
 - Race with a live stream: an answer that finishes after the erase finds no `streaming` row; its finish transaction rolls back, so it writes no message, no quota row and no event. A send whose turn transaction runs at the same time as the erase can make the erase fail on the message foreign key; the Nak retries it and the next run deletes the new rows. A still-valid token can create new rows after the erase until it expires; identity removes the Zitadel user, so no new token comes.
+
+## AI settings (#39)
+
+Contract `llm.getAiSettings`, `llm.updateAiSettings` (spec 0.4.0). Code: `internal/settings` (rules), `internal/aisettings` (HTTP), `internal/identity` (identity client), `internal/store/settings.go`.
+
+| Setting | Bound | Default (no row, `version` 0) | Used by |
+|---|---|---|---|
+| `model` | one of `allowed_models` | `default` | create without `model` |
+| `allowed_models` | 1 to 32 aliases of `MODEL_ALIASES` | every service alias | create and send: other aliases get 400 |
+| `system_prompt` | plain text, 4000 characters; `\n`, `\r`, `\t` allowed, other control characters refused | empty = `SYSTEM_PROMPT` | first model message |
+| `max_input_chars` | 1 to `MAX_INPUT_CHARS` | `MAX_INPUT_CHARS` | send: longer → 413 |
+| `user_tokens_per_day` | 0, or above `QUOTA_RESERVE_TOKENS` and at most the plan's `llm_tokens_per_user_per_day` | 0 = plan only | send: user limit = the smaller of cap and limit |
+| `temperature` | 0 to 2, absent = model default | absent | `provider.Options.Temperature` |
+
+- Access order: token (401) → widget token, or no role `owner`/`admin` → 403 → PUT body (400) → identity `GET /v1/me/entitlements` with the caller's token → validation (400, `detail` names the field) → store (409).
+- Identity answers 401/403/404 (not an active member): 403. Identity down, other status, or `IDENTITY_URL` unset: 503 `settings_unavailable`. The client never follows a redirect with the caller's token; 5 s timeout.
+- The same call gives the identity org id (event `orgid`, `subject`, `data.org_id`) and the plan limit for `bounds.user_tokens_per_day`.
+- The operator's allow-list always wins: stored aliases that `MODEL_ALIASES` no longer has are dropped when read; a dropped default falls back to `default`. An org can never name a provider model.
+- The send reads the settings in its own transaction before the quota booking. The cap only lowers the quota limit (`settings.Cap`), never raises it.
+- A conversation whose model the org no longer allows gets 400 on its next send. Create a new conversation.
+- Save: one transaction with `SELECT ... FOR UPDATE`, version check, `INSERT ... ON CONFLICT DO NOTHING` or `UPDATE ... WHERE version = $n`, and the event in the kit outbox. Two first saves at once: the second gets 409.
+- No change (same values, models compared as a set): 200 with the same version, no row write, no event.
+- Event `dev.synthwerk.llm.ai_settings.changed.v1` on `evt.llm.ai_settings.changed.v1`, stream `EVT_LLM`: full new state, `changed` names, `system_prompt_chars`. Never the prompt text. `actor` = `user:<sub>`. Identity consumes it for the audit list.
+- Logs: `llm.settings.changed` with version and changed names; `llm.settings.unavailable`; never the prompt.
+- Gap: llm sees only the token role. Identity checks the active stored membership, so a deactivated admin with an old token gets 403.
+- Gap: the quota limits of a send still come from config (`quota.Static`). The plan bounds the cap at write time. When the send reads entitlements, nothing here changes.
 
 ## Providers
 
@@ -89,24 +118,27 @@ Adapter errors never hold the provider's body or the prompt. `tests/contract/pro
 
 ## Data
 
-Migrations `0002_conversations.sql`, `0003_quota.sql` and `0004_own_data.sql`, schema `llm`:
+Migrations `0002_conversations.sql`, `0003_quota.sql`, `0004_own_data.sql` and `0005_ai_settings.sql`, schema `llm`:
 
 - `conversation(id, tenant_id, owner_id, model_alias, created_at, deleted_at)`, `message(id, conversation_id, tenant_id, owner_id, role, content, status, tokens_in, tokens_out, created_at)`.
 - `ENABLE` + `FORCE ROW LEVEL SECURITY`: the service role owns the schema and is still bound by the policies. Each transaction sets `synthwerk.tenant_id` and `synthwerk.owner_id` with `set_config(..., true)` from the verified token.
 - A startup sweep marks answers left in `streaming` by a crash as `failed` (policy `sweep`, only for that transaction). It touches only rows older than `STREAM_TIMEOUT` + 1 min, so it never fails a live stream of another replica.
 - `quota_usage(tenant_id, owner_id, window_start, used, reserved)`: one org row (`owner_id = ''`) and one row per user, per day. RLS: a transaction sees its org row and its own row, never a peer's row. `message.quota_reserved` and `message.quota_window` hold the booking of each answer, so the finish and the sweep settle exactly that amount.
 - `0004_own_data.sql`: indexes on `owner_id` (lookups across orgs) and the policies `export_read` (`SELECT`, `synthwerk.export_owner`) and `erase` + `erase_read` (`DELETE`, `synthwerk.erase_owner`, `synthwerk.erase_orgs`). Only the export and the erase transaction set these settings.
+- `0005_ai_settings.sql`: `org_settings(tenant_id PK, model_alias, allowed_models text[], system_prompt, max_input_chars, user_tokens_per_day, temperature, version, updated_at)` with CHECKs that repeat the contract bounds. No user id. RLS `org_only` (the transaction's org), `erase` + `erase_read` (the closed orgs of `synthwerk.erase_orgs`).
 - Pitfall: `current_setting(..., true)` is `NULL` when a setting was never used, but `''` in later transactions on the same pooled connection. So every policy needs a non-empty match; `''` would otherwise match the org quota rows.
 
 ## Events
 
 Consumed: `dev.synthwerk.identity.user.deleted.v1` on `evt.identity.user.deleted.v1`, stream `EVT_IDENTITY` (owned by identity). See [Own data](#own-data-41).
 
+Produced: `dev.synthwerk.llm.ai_settings.changed.v1` (see [AI settings](#ai-settings-39)).
+
 Produced: `dev.synthwerk.llm.message.completed.v1` on `evt.llm.message.completed.v1`, stream `EVT_LLM` (`evt.llm.>`, created or updated by the service at start). Written in the same transaction as the final message (kit outbox), for `completed`, `failed` and `canceled`. `subject` = message id, `orgid` = org, `actor` = `user:<sub>`. Data: ids, model alias, provider, token counts, latency, time to first token, status.
 
 ## Config
 
-`SYNTHWERK_LLM_*` (see `cmd/llm/main.go` and `internal/config`): `PROVIDER`, `BASE_URL`, `API_KEY[_FILE]`, `MODEL_ALIASES` (`default=qwen3.5:4b`; the alias `default` must exist), `SYSTEM_PROMPT`, `MAX_INPUT_CHARS` (8000), `MAX_STREAMS_PER_OWNER` (2), `MAX_CONTEXT_CHARS` (24000), `STREAM_TIMEOUT` (120s), `PROVIDER_CONCURRENCY` (1), `QUEUE_TIMEOUT` (10s), `FAKE_DELAY` (0s), `QUOTA_USER_TOKENS` (50000 per UTC day, 0 = no limit), `QUOTA_ORG_TOKENS` (500000, 0 = no limit), `QUOTA_RESERVE_TOKENS` (1024; a non-zero limit must be above it), `OIDC_ISSUER`, `OIDC_AUDIENCE`, `JWKS_URL`, `DATABASE_URL`, `NATS_URL`, `HTTP_ADDR`.
+`SYNTHWERK_LLM_*` (see `cmd/llm/main.go` and `internal/config`): `PROVIDER`, `BASE_URL`, `API_KEY[_FILE]`, `MODEL_ALIASES` (`default=qwen3.5:4b`; the alias `default` must exist), `SYSTEM_PROMPT`, `MAX_INPUT_CHARS` (8000), `MAX_STREAMS_PER_OWNER` (2), `MAX_CONTEXT_CHARS` (24000), `STREAM_TIMEOUT` (120s), `PROVIDER_CONCURRENCY` (1), `QUEUE_TIMEOUT` (10s), `FAKE_DELAY` (0s), `QUOTA_USER_TOKENS` (50000 per UTC day, 0 = no limit), `QUOTA_ORG_TOKENS` (500000, 0 = no limit), `QUOTA_RESERVE_TOKENS` (1024; a non-zero limit must be above it), `OIDC_ISSUER`, `OIDC_AUDIENCE`, `JWKS_URL`, `IDENTITY_URL` (identity base URL for the AI settings; empty = `/v1/ai-settings` answers 503), `DATABASE_URL`, `NATS_URL`, `HTTP_ADDR`.
 
 ## Tests
 
@@ -116,6 +148,11 @@ Produced: `dev.synthwerk.llm.message.completed.v1` on `evt.llm.message.completed
 - `tests/unit/chat/export_test.go` — `ExportMe - user token - 200 LlmExport with every row in order, owner = token sub`; `ExportMe - user without rows - 200 with two empty lists`; `ExportMe - widget token - 403 forbidden, no store call`; `ExportMe - store fails before the first row - 500 problem`; `ExportMe - more rows than the contract allows - 500 before the first byte`; `ExportMe - store fails after the first row - connection aborted, never valid JSON`. `GET /v1/me/export` is in the 401 table of `auth_test.go`.
 - `tests/unit/erasure` — `Parse - contract example`; `Parse - each broken event - ErrMalformed, no value in the error`; `Handle - valid event - erase, then ack, no sub in the logs`; `Handle - malformed - Term, WARN`; `Handle - database error - Nak with a growing delay`; `ConsumerConfig - defaults`.
 - `tests/integration/erasure` — `ExportMe - user with rows in two orgs and a peer in both - every own row, also the deleted conversation; no peer row, no org quota row`; `RLS - export setting left over on a pooled connection - next transaction sees nothing`; `EraseUser - rows in two orgs, org-2 closed - own rows gone, peer and org-1 org row stay, org-2 org row gone; repeat deletes nothing`; `EraseUser - no closed orgs - org rows stay`; `RLS - chat session - cannot delete a peer's rows`; `Consumer - EVT_IDENTITY missing at start - WARN, attaches when identity creates it; erase, repeat and malformed event all leave nothing pending`.
+- `tests/unit/settings` — `Validate - <rule> - FieldError names <field>` (model and aliases outside the service, prompt control characters and length, input limit, cap above the plan and at the reserve, temperature); `Normalize - operator removed the org's model - service default, still allowed`; `Apply - empty org prompt - the service prompt`; `Changed - same values, other order of models - nothing`.
+- `tests/unit/aisettings` — `GET/PUT - member, operator, widget token - 403 forbidden, no identity call, no store call`; `GetAiSettings - org never saved - defaults with version 0 and the bounds`; `GetAiSettings - identity not configured / down - settings_unavailable`; `GetAiSettings - not an active member - forbidden`; `UpdateAiSettings - valid change - 200 version 1, one event without prompt text`; `UpdateAiSettings - same values again - no second event`; `UpdateAiSettings - stale version - 409 version_conflict`; `UpdateAiSettings - <out of bounds> - 400 names the field, no store call`.
+- `tests/unit/identity` — `MyEntitlements - identity answers 200 - org id and per-user limit, caller token forwarded`; 401/403/404 → `ErrDenied`; 500, redirect, bad body, unreachable → `ErrUnavailable`.
+- `tests/integration/chat/settings_test.go` — `Send - org input limit changed to 10 - an 11-character message gets 413, a 10-character one streams`; `Send - org system prompt and temperature - the model call carries both`; `Create and Send - a model the org no longer allows - 400`; `Send - org cap per user below the plan - 429 quota_exhausted with scope user and the cap as limit`; `UpdateAiSettings - a change - row and event in one transaction; RLS hides the row from another org`.
+- `tests/integration/erasure` — `EraseUser` also deletes the AI settings of the closed org only.
 - `tests/contract/provider` — conformance of `fake` and `openaicompat`.
 - `tests/unit/config`, `tests/unit/sse`, `tests/unit/quota` (UTC window, `Retry-After` range, error matching).
 
@@ -128,3 +165,4 @@ Entitlement-based limits (#31, the `quota.Source` seam is ready), a `GET` of the
 | Date | Change |
 |---|---|
 | 2026-10-30 | `GET /v1/me/export` and the `user.deleted.v1` consumer (synthwerk#41). Migration `0004_own_data.sql`. `/readyz` check `erasure` (degraded only). Contracts `go` at the #41 commit; bump to `v0.6.0` once tagged. |
+| 2026-10-30 | AI settings per org: `GET`/`PUT /v1/ai-settings`, `ai_settings.changed.v1`, migration `0005_ai_settings.sql`, `SYNTHWERK_LLM_IDENTITY_URL` (synthwerk#39). Contracts `go` at the #39 commit (contracts PR #26). |

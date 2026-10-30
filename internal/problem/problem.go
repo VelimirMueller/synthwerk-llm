@@ -21,17 +21,22 @@ const (
 	CodeQuotaExhausted   = "quota_exhausted"
 	CodeModelUnavailable = "model_unavailable"
 	CodeInternal         = "internal_error"
+	// AI settings (#39).
+	CodeVersionConflict     = "version_conflict"
+	CodeSettingsUnavailable = "settings_unavailable"
 )
 
 var titles = map[string]string{
-	CodeInvalidRequest:   "Invalid request",
-	CodeForbidden:        "Forbidden",
-	CodeNotFound:         "Not found",
-	CodeInputTooLarge:    "Input too large",
-	CodeTooManyStreams:   "Too many streams",
-	CodeQuotaExhausted:   "Quota exhausted",
-	CodeModelUnavailable: "Model unavailable",
-	CodeInternal:         "Internal error",
+	CodeInvalidRequest:      "Invalid request",
+	CodeForbidden:           "Forbidden",
+	CodeNotFound:            "Not found",
+	CodeInputTooLarge:       "Input too large",
+	CodeTooManyStreams:      "Too many streams",
+	CodeQuotaExhausted:      "Quota exhausted",
+	CodeModelUnavailable:    "Model unavailable",
+	CodeInternal:            "Internal error",
+	CodeVersionConflict:     "Version conflict",
+	CodeSettingsUnavailable: "Settings unavailable",
 }
 
 // Problem is the body.

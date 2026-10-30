@@ -185,10 +185,13 @@ type Erased struct {
 	Messages      int64
 	Conversations int64
 	QuotaRows     int64
+	// SettingsRows are the AI settings of the closed orgs (#39).
+	SettingsRows int64
 }
 
 // EraseUser deletes every message, conversation and own quota row of user in every
-// org, and the org quota rows (owner_id = ”) of orgs, in one transaction. Policy
+// org, and the org quota rows (owner_id = ”) and the AI settings of orgs, in one
+// transaction. Policy
 // erase (migration 0004) allows exactly these rows. A repeat deletes nothing and
 // returns no error.
 func (s *Store) EraseUser(ctx context.Context, user string, orgs []string) (Erased, error) {
@@ -223,6 +226,7 @@ func (s *Store) EraseUser(ctx context.Context, user string, orgs []string) (Eras
 		{&e.Messages, `DELETE FROM llm.message WHERE owner_id = $1`, []any{user}},
 		{&e.Conversations, `DELETE FROM llm.conversation WHERE owner_id = $1`, []any{user}},
 		{&e.QuotaRows, `DELETE FROM llm.quota_usage WHERE owner_id = $1 OR (owner_id = '' AND tenant_id = ANY($2::text[]))`, []any{user, orgs}},
+		{&e.SettingsRows, `DELETE FROM llm.org_settings WHERE tenant_id = ANY($1::text[])`, []any{orgs}},
 	}
 	for _, st := range steps {
 		tag, err := tx.Exec(ctx, st.sql, st.args...)

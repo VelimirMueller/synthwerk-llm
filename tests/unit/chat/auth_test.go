@@ -11,6 +11,7 @@ import (
 	"github.com/VelimirMueller/synthwerk-contracts/go/kit/cloudevents"
 
 	"github.com/VelimirMueller/synthwerk-llm/internal/provider"
+	"github.com/VelimirMueller/synthwerk-llm/internal/settings"
 	"github.com/VelimirMueller/synthwerk-llm/internal/store"
 	"github.com/VelimirMueller/synthwerk-llm/tests/support/harness"
 )
@@ -48,6 +49,11 @@ func (s panicStore) Finish(context.Context, store.Owner, store.Final, cloudevent
 func (s panicStore) Export(context.Context, string, store.ExportSink) error {
 	s.fail()
 	return nil
+}
+
+func (s panicStore) OrgSettings(context.Context, store.Owner) (*settings.Settings, error) {
+	s.fail()
+	return nil, nil
 }
 
 // panicProvider fails the test when the model is called.

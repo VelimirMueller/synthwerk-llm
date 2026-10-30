@@ -4,7 +4,9 @@
 // Refusal order of a send (spec #32 §3.3). The model call is the last step:
 //  1. auth.Middleware: no valid token → 401 before this package runs.
 //  2. origin claim differs from the Origin header → 403.
-//  3. body not valid → 400; conversation not the caller's → 404; input too long → 413.
+//  3. body not valid → 400; conversation not the caller's → 404; the org's AI
+//     settings (#39): a model the org does not allow → 400, input above the org's
+//     limit → 413.
 //  4. stream slot of the owner → 429; quota limits read (internal/quota).
 //  5. store the turn and book the quota in one transaction: over quota → 429
 //     quota_exhausted, nothing stored. Wait for a model slot (503), call the provider.
@@ -23,6 +25,7 @@ import (
 
 	"github.com/VelimirMueller/synthwerk-llm/internal/provider"
 	"github.com/VelimirMueller/synthwerk-llm/internal/quota"
+	"github.com/VelimirMueller/synthwerk-llm/internal/settings"
 	"github.com/VelimirMueller/synthwerk-llm/internal/store"
 )
 
@@ -40,6 +43,8 @@ type Store interface {
 	Finish(ctx context.Context, o store.Owner, f store.Final, ev cloudevents.Event) error
 	// Export streams every row of user in every org to sink (GET /v1/me/export).
 	Export(ctx context.Context, user string, sink store.ExportSink) error
+	// OrgSettings returns the AI settings of the org (#39). Nil: none saved.
+	OrgSettings(ctx context.Context, o store.Owner) (*settings.Settings, error)
 }
 
 // Config of the handler.
@@ -114,6 +119,26 @@ func New(cfg Config, st Store, p provider.Provider, limits quota.Source, logger 
 	}
 }
 
+// Service is the bounds the operator set for every org's AI settings.
+func (h *Handler) Service() settings.Service {
+	return settings.Service{
+		Aliases:       h.cfg.Aliases,
+		DefaultAlias:  h.cfg.DefaultAlias,
+		SystemPrompt:  h.cfg.SystemPrompt,
+		MaxInputChars: h.cfg.MaxInputChars,
+		ReserveTokens: h.cfg.QuotaReserveTokens,
+	}
+}
+
+// applied reads the org's AI settings and turns them into what a create or send uses.
+func (h *Handler) applied(ctx context.Context, o store.Owner) (settings.Applied, error) {
+	s, err := h.store.OrgSettings(ctx, o)
+	if err != nil {
+		return settings.Applied{}, err
+	}
+	return h.Service().Apply(s), nil
+}
+
 // acquireStream takes one stream slot of the owner. ok false: the owner is at the max.
 func (h *Handler) acquireStream(o store.Owner) (release func(), ok bool) {
 	h.mu.Lock()
@@ -145,10 +170,11 @@ func (h *Handler) acquireModel(ctx context.Context) (release func(), ok bool) {
 	}
 }
 
-// history turns stored messages into model messages: the system prompt, then the
+// history turns stored messages into model messages: the system prompt (the org's,
+// else the service's; empty: none), then the
 // newest turns that fit MaxContextChars, then the new user text. It stops at the
 // first turn that does not fit, so the model never sees a history with a gap.
-func (h *Handler) history(past []store.Message, text string) []provider.Message {
+func (h *Handler) history(past []store.Message, text, systemPrompt string) []provider.Message {
 	budget := max(0, h.cfg.MaxContextChars-len([]rune(text)))
 	var keep []provider.Message
 	for i := len(past) - 1; i >= 0; i-- {
@@ -164,8 +190,8 @@ func (h *Handler) history(past []store.Message, text string) []provider.Message 
 		keep = append(keep, provider.Message{Role: provider.Role(m.Role), Text: m.Content})
 	}
 	out := make([]provider.Message, 0, len(keep)+2)
-	if h.cfg.SystemPrompt != "" {
-		out = append(out, provider.Message{Role: provider.RoleSystem, Text: h.cfg.SystemPrompt})
+	if systemPrompt != "" {
+		out = append(out, provider.Message{Role: provider.RoleSystem, Text: systemPrompt})
 	}
 	for i := len(keep) - 1; i >= 0; i-- {
 		out = append(out, keep[i])
