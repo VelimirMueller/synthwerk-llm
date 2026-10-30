@@ -19,16 +19,19 @@ import (
 // maxBody bounds a JSON request body: 8000 characters, each escaped as \uXXXX at worst.
 const maxBody = 64 << 10
 
-// Register adds the chat routes to mux. authn must be auth.Middleware with the
-// gateway's verifier: every route needs a valid user token.
-func (h *Handler) Register(mux *http.ServeMux, authn func(http.Handler) http.Handler) {
-	mux.Handle("POST /v1/conversations", authn(http.HandlerFunc(h.create)))
-	mux.Handle("GET /v1/conversations/{id}", authn(http.HandlerFunc(h.get)))
-	mux.Handle("POST /v1/conversations/{id}/messages", authn(http.HandlerFunc(h.send)))
-	mux.Handle("GET /v1/me/export", authn(http.HandlerFunc(h.exportMe)))
+// Register adds the chat routes to mux. Both checks wrap auth.Middleware.
+// chatAuthn guards the routes the widget uses: user and widget tokens (#30).
+// userAuthn guards the export: user tokens only.
+func (h *Handler) Register(mux *http.ServeMux, chatAuthn, userAuthn func(http.Handler) http.Handler) {
+	mux.Handle("POST /v1/conversations", chatAuthn(http.HandlerFunc(h.create)))
+	mux.Handle("GET /v1/conversations/{id}", chatAuthn(http.HandlerFunc(h.get)))
+	mux.Handle("POST /v1/conversations/{id}/messages", chatAuthn(http.HandlerFunc(h.send)))
+	mux.Handle("GET /v1/me/export", userAuthn(http.HandlerFunc(h.exportMe)))
 }
 
 // owner returns the principal's owner and checks the widget origin claim (#30).
+// Owner = token org and sub: AI settings and the org quota apply per org, the user
+// quota per sub, for a widget token too.
 // It writes the refusal and returns ok false.
 func owner(w http.ResponseWriter, r *http.Request) (*auth.Principal, store.Owner, bool) {
 	p, ok := auth.FromContext(r.Context())

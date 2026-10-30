@@ -105,6 +105,26 @@ func TestSendOrgInputLimitRefusesLongerPrompt(t *testing.T) {
 	}
 }
 
+// Send - widget token (#30) - the org input limit of the token org applies.
+func TestSendOrgInputLimitAppliesToWidgetTokens(t *testing.T) {
+	r := settingsRig(t, nil, nil)
+	r.put(t, map[string]any{"max_input_chars": 10})
+	const origin = "https://shop.example"
+	wtok := r.WidgetToken(t, "user-w", "org-1", origin)
+	id := r.Create(t, wtok, "Origin", origin)
+	if res, _ := r.Send(t, wtok, id, strings.Repeat("x", 11), "Origin", origin); res.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("11 characters: status %d, want 413", res.StatusCode)
+	}
+	if res, evs := r.Send(t, wtok, id, strings.Repeat("x", 10), "Origin", origin); res.StatusCode != http.StatusOK || harness.Text(t, evs) == "" {
+		t.Fatalf("10 characters: status %d", res.StatusCode)
+	}
+	// A widget token of another org keeps the service limit.
+	other := r.WidgetToken(t, "user-w", "org-2", origin)
+	if res, _ := r.Send(t, other, r.Create(t, other, "Origin", origin), strings.Repeat("x", 11), "Origin", origin); res.StatusCode != http.StatusOK {
+		t.Fatalf("org-2: status %d", res.StatusCode)
+	}
+}
+
 // Send - org system prompt and temperature - the model call carries both.
 func TestSendUsesOrgPromptAndTemperature(t *testing.T) {
 	rec := newRecorder()

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/VelimirMueller/synthwerk-contracts/go/kit/auth"
@@ -73,11 +75,15 @@ type Options struct {
 	// Plans answers the identity check of /v1/ai-settings (#39). Nil: identity is
 	// not configured, the settings routes answer 503.
 	Plans aisettings.Plans
+	// NoWidget turns the widget issuer off: llm trusts the user issuer only.
+	NoWidget bool
 }
 
 // H is a running gateway.
 type H struct {
 	Issuer *authtest.Issuer
+	// Widget is the widget token issuer (identity, #30). Nil with Options.NoWidget.
+	Widget *authtest.Issuer
 	Fake   *fake.Provider
 	Server *httptest.Server
 	Logs   *Buffer
@@ -124,6 +130,14 @@ func New(t *testing.T, st chat.Store, o Options) *H {
 	}
 	ch := chat.New(cfg, st, p, o.Quota, logger)
 	deps := app.Deps{DB: db, Log: logger, Chat: ch, Verifier: v}
+	if !o.NoWidget {
+		// Identity signs widget tokens with ES256 and typ at+jwt.
+		h.Widget = authtest.NewIssuer(t)
+		h.Widget.Rotate(t, jose.ES256)
+		if deps.WidgetVerifier, err = auth.NewVerifier(h.Widget.Config()); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if ss, ok := st.(aisettings.Store); ok {
 		deps.Settings = aisettings.New(ch.Service(), ss, o.Plans, cfg.Source, logger)
 	}
@@ -144,6 +158,27 @@ func New(t *testing.T, st chat.Store, o Options) *H {
 func (h *H) Token(t *testing.T, sub, org string) string {
 	t.Helper()
 	return h.Issuer.Mint(t, authtest.Claims(sub, org, auth.RoleMember))
+}
+
+// WidgetApp is the client_id (app id) of minted widget tokens.
+const WidgetApp = "0199f3a0-0000-7000-8000-00000000a991"
+
+// WidgetToken mints a widget token like identity does (#30): sub, org, client_id =
+// app id, synthwerk:origin, no roles, typ at+jwt. extra overrides claims; a nil value
+// removes one (authtest.Issuer drops nil claims before it signs).
+func (h *H) WidgetToken(t *testing.T, sub, org, origin string, extra ...map[string]any) string {
+	t.Helper()
+	if h.Widget == nil {
+		t.Fatal("harness: the widget issuer is off")
+	}
+	c := map[string]any{
+		"sub": sub, auth.ClaimOrgID: org, auth.ClaimClientID: WidgetApp,
+		auth.ClaimOrigin: origin, "jti": "0199f3a0-0000-7000-8000-000000000001",
+	}
+	for _, e := range extra {
+		maps.Copy(c, e)
+	}
+	return h.Widget.MintType(t, "at+jwt", c)
 }
 
 // TokenAs mints a user token for sub in org with one org role.
@@ -190,10 +225,10 @@ func (h *H) DoCtx(ctx context.Context, t *testing.T, method, path, token string,
 	return res
 }
 
-// Create makes a conversation and returns its id.
-func (h *H) Create(t *testing.T, token string) string {
+// Create makes a conversation and returns its id. header: name, value pairs.
+func (h *H) Create(t *testing.T, token string, header ...string) string {
 	t.Helper()
-	res := h.Do(t, http.MethodPost, "/v1/conversations", token, map[string]any{})
+	res := h.Do(t, http.MethodPost, "/v1/conversations", token, map[string]any{}, header...)
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("create: status %d", res.StatusCode)
 	}
@@ -206,10 +241,10 @@ func (h *H) Create(t *testing.T, token string) string {
 	return c.ID
 }
 
-// Send posts a message and reads the whole answer stream.
-func (h *H) Send(t *testing.T, token, convID, content string) (*http.Response, []sse.Event) {
+// Send posts a message and reads the whole answer stream. header: name, value pairs.
+func (h *H) Send(t *testing.T, token, convID, content string, header ...string) (*http.Response, []sse.Event) {
 	t.Helper()
-	res := h.Do(t, http.MethodPost, "/v1/conversations/"+convID+"/messages", token, map[string]string{"content": content})
+	res := h.Do(t, http.MethodPost, "/v1/conversations/"+convID+"/messages", token, map[string]string{"content": content}, header...)
 	if res.StatusCode != http.StatusOK {
 		return res, nil
 	}

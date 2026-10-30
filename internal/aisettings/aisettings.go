@@ -69,7 +69,8 @@ func New(svc settings.Service, st Store, plans Plans, source string, logger *slo
 	return &Handler{svc: svc, store: st, plans: plans, source: source, log: logger}
 }
 
-// Register adds the routes to mux. authn must be auth.Middleware.
+// Register adds the routes to mux. authn must wrap auth.Middleware and take user
+// tokens only (app: no widget tokens, #30).
 func (h *Handler) Register(mux *http.ServeMux, authn func(http.Handler) http.Handler) {
 	mux.Handle("GET /v1/ai-settings", authn(http.HandlerFunc(h.get)))
 	mux.Handle("PUT /v1/ai-settings", authn(http.HandlerFunc(h.put)))
