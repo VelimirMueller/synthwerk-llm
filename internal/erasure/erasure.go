@@ -284,6 +284,7 @@ func (c *Consumer) Handle(ctx context.Context, m jetstream.Msg) {
 		slog.Int64("synthwerk.messages", n.Messages),
 		slog.Int64("synthwerk.conversations", n.Conversations),
 		slog.Int64("synthwerk.quota_rows", n.QuotaRows),
+		slog.Int64("synthwerk.settings_rows", n.SettingsRows),
 		slog.Int("synthwerk.deleted_orgs", len(d.DeletedOrgs)))
 }
 

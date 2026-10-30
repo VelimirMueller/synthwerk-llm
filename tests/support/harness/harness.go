@@ -21,6 +21,7 @@ import (
 	"github.com/VelimirMueller/synthwerk-contracts/go/kit/auth/authtest"
 	kitlog "github.com/VelimirMueller/synthwerk-contracts/go/kit/log"
 
+	"github.com/VelimirMueller/synthwerk-llm/internal/aisettings"
 	"github.com/VelimirMueller/synthwerk-llm/internal/app"
 	"github.com/VelimirMueller/synthwerk-llm/internal/chat"
 	"github.com/VelimirMueller/synthwerk-llm/internal/provider"
@@ -69,6 +70,9 @@ type Options struct {
 	Chat func(*chat.Config)
 	// Quota is the limit source. Nil: quota.None.
 	Quota quota.Source
+	// Plans answers the identity check of /v1/ai-settings (#39). Nil: identity is
+	// not configured, the settings routes answer 503.
+	Plans aisettings.Plans
 }
 
 // H is a running gateway.
@@ -118,7 +122,12 @@ func New(t *testing.T, st chat.Store, o Options) *H {
 	if db == nil {
 		db = NopDB{}
 	}
-	h.App, err = app.New(app.Deps{DB: db, Log: logger, Chat: chat.New(cfg, st, p, o.Quota, logger), Verifier: v}, app.Config{Version: "0.0.0", Commit: "0000000", Env: "ci"})
+	ch := chat.New(cfg, st, p, o.Quota, logger)
+	deps := app.Deps{DB: db, Log: logger, Chat: ch, Verifier: v}
+	if ss, ok := st.(aisettings.Store); ok {
+		deps.Settings = aisettings.New(ch.Service(), ss, o.Plans, cfg.Source, logger)
+	}
+	h.App, err = app.New(deps, app.Config{Version: "0.0.0", Commit: "0000000", Env: "ci"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,6 +144,12 @@ func New(t *testing.T, st chat.Store, o Options) *H {
 func (h *H) Token(t *testing.T, sub, org string) string {
 	t.Helper()
 	return h.Issuer.Mint(t, authtest.Claims(sub, org, auth.RoleMember))
+}
+
+// TokenAs mints a user token for sub in org with one org role.
+func (h *H) TokenAs(t *testing.T, sub, org, role string) string {
+	t.Helper()
+	return h.Issuer.Mint(t, authtest.Claims(sub, org, role))
 }
 
 // Do sends a request bound to the test. token "" sends none. body nil sends none.

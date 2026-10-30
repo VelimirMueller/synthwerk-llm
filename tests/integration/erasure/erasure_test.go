@@ -24,9 +24,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/VelimirMueller/synthwerk-contracts/go/kit/cloudevents"
 	"github.com/VelimirMueller/synthwerk-contracts/go/llm"
 
 	"github.com/VelimirMueller/synthwerk-llm/internal/erasure"
+	"github.com/VelimirMueller/synthwerk-llm/internal/settings"
 	"github.com/VelimirMueller/synthwerk-llm/internal/store"
 	"github.com/VelimirMueller/synthwerk-llm/tests/support/containers"
 	"github.com/VelimirMueller/synthwerk-llm/tests/support/harness"
@@ -244,13 +246,30 @@ func TestExportSettingDoesNotLeakToTheNextTransaction(t *testing.T) {
 func TestEraseUserRemovesOwnRowsInAllOrgs(t *testing.T) {
 	r := newRig(t)
 	seed(t, r)
+	// AI settings of both orgs (#39): only the closed org's row goes.
+	for _, org := range []string{"org-1", "org-2"} {
+		next := settings.Settings{Model: "default", AllowedModels: []string{"default"}, MaxInputChars: 100}
+		if _, _, err := r.st.SaveOrgSettings(t.Context(), store.Owner{Tenant: org, User: "user-a"}, next, 0,
+			func(*settings.Settings, int64) (*cloudevents.Event, error) {
+				ev, err := cloudevents.New(t.Context(), "dev.synthwerk.llm.ai_settings.changed.v1", "/synthwerk/llm/local", map[string]any{})
+				return &ev, err
+			}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	peerBefore := r.count(t, "user-b", "")
 	got, err := r.st.EraseUser(t.Context(), "user-a", []string{"org-2"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Conversations != 3 || got.Messages != 6 || got.QuotaRows != 3 { // 2 own + org-2's org row
+	if got.Conversations != 3 || got.Messages != 6 || got.QuotaRows != 3 || got.SettingsRows != 1 { // 2 own + org-2's org row; org-2 settings
 		t.Fatalf("erased %+v", got)
+	}
+	if s, err := r.st.OrgSettings(t.Context(), store.Owner{Tenant: "org-1", User: "user-b"}); err != nil || s == nil {
+		t.Fatalf("org-1 settings: %v %v", s, err)
+	}
+	if s, err := r.st.OrgSettings(t.Context(), store.Owner{Tenant: "org-2", User: "user-b"}); err != nil || s != nil {
+		t.Fatalf("org-2 settings left: %v %v", s, err)
 	}
 	if c := r.count(t, "user-a", ""); c != (counts{}) {
 		t.Fatalf("user-a rows left: %+v", c)

@@ -69,6 +69,8 @@ func TestLoadRefuses(t *testing.T) {
 		"user quota at reserve":   {map[string]string{"SYNTHWERK_LLM_QUOTA_USER_TOKENS": "1024"}, "QUOTA_USER_TOKENS must be 0 or above"},
 		"org quota below reserve": {map[string]string{"SYNTHWERK_LLM_QUOTA_ORG_TOKENS": "2000", "SYNTHWERK_LLM_QUOTA_RESERVE_TOKENS": "4000"}, "QUOTA_ORG_TOKENS must be 0 or above"},
 		"zero reserve":            {map[string]string{"SYNTHWERK_LLM_QUOTA_RESERVE_TOKENS": "0"}, "QUOTA_RESERVE_TOKENS"},
+		"identity url relative":   {map[string]string{"SYNTHWERK_LLM_IDENTITY_URL": "identity:8080"}, "IDENTITY_URL must be an absolute"},
+		"identity url with query": {map[string]string{"SYNTHWERK_LLM_IDENTITY_URL": "http://identity:8080/?x=1"}, "IDENTITY_URL must be an absolute"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -91,5 +93,16 @@ func TestLoadFakeInDev(t *testing.T) {
 	c, err := config.Load(envOf(map[string]string{"SYNTHWERK_LLM_PROVIDER": "fake", "SYNTHWERK_PLATFORM_ENV": "dev", "SYNTHWERK_LLM_FAKE_DELAY": "50ms"}))
 	if err != nil || c.FakeDelay.Milliseconds() != 50 {
 		t.Fatalf("c=%+v err=%v", c, err)
+	}
+}
+
+func TestLoadIdentityURL(t *testing.T) {
+	c, err := config.Load(envOf(map[string]string{"SYNTHWERK_LLM_IDENTITY_URL": "http://identity:8080"}))
+	if err != nil || c.IdentityURL != "http://identity:8080" {
+		t.Fatalf("c=%+v err=%v", c.IdentityURL, err)
+	}
+	c, err = config.Load(envOf(nil))
+	if err != nil || c.IdentityURL != "" {
+		t.Fatalf("unset: %q %v", c.IdentityURL, err)
 	}
 }

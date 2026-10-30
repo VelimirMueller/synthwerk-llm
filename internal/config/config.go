@@ -6,6 +6,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"slices"
@@ -95,6 +96,9 @@ type Config struct {
 	JWKSURL string
 	// NATSURL of the bus (secret: may hold credentials).
 	NATSURL string
+	// IdentityURL is the identity base URL as llm reaches it (#39). The AI settings
+	// routes ask identity for the membership and the plan. Empty: they answer 503.
+	IdentityURL string
 }
 
 // Load reads the config. getenv is os.Getenv in production.
@@ -216,6 +220,13 @@ func Load(getenv func(string) string) (Config, error) {
 		errs = append(errs, fmt.Errorf("%s is required", env.Key(Service, "OIDC_AUDIENCE")))
 	}
 	c.JWKSURL = get("JWKS_URL", "")
+	c.IdentityURL = get("IDENTITY_URL", "")
+	if c.IdentityURL != "" {
+		u, err := url.Parse(c.IdentityURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			errs = append(errs, fmt.Errorf("%s must be an absolute http(s) URL without user info, query or fragment", env.Key(Service, "IDENTITY_URL")))
+		}
+	}
 	c.NATSURL = get("NATS_URL", "")
 	if c.NATSURL == "" {
 		errs = append(errs, fmt.Errorf("%s is required", env.Key(Service, "NATS_URL")))

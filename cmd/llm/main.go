@@ -19,6 +19,7 @@
 //	SYNTHWERK_LLM_OIDC_ISSUER      token issuer (required)
 //	SYNTHWERK_LLM_OIDC_AUDIENCE    accepted audiences, comma list (required)
 //	SYNTHWERK_LLM_JWKS_URL         key set URL; empty = OIDC discovery on the issuer
+//	SYNTHWERK_LLM_IDENTITY_URL     identity base URL for the AI settings (#39); empty = /v1/ai-settings answers 503
 //	SYNTHWERK_LLM_QUOTA_USER_TOKENS  tokens per UTC day per user in an org, default 50000 (0 = no limit)
 //	SYNTHWERK_LLM_QUOTA_ORG_TOKENS   tokens per UTC day per org, default 500000 (0 = no limit)
 //	More limits: internal/config.
@@ -55,10 +56,12 @@ import (
 	kitotel "github.com/VelimirMueller/synthwerk-contracts/go/kit/otel"
 	"github.com/VelimirMueller/synthwerk-contracts/go/kit/outbox"
 
+	"github.com/VelimirMueller/synthwerk-llm/internal/aisettings"
 	"github.com/VelimirMueller/synthwerk-llm/internal/app"
 	"github.com/VelimirMueller/synthwerk-llm/internal/chat"
 	"github.com/VelimirMueller/synthwerk-llm/internal/config"
 	"github.com/VelimirMueller/synthwerk-llm/internal/erasure"
+	"github.com/VelimirMueller/synthwerk-llm/internal/identity"
 	"github.com/VelimirMueller/synthwerk-llm/internal/provider/registry"
 	"github.com/VelimirMueller/synthwerk-llm/internal/quota"
 	"github.com/VelimirMueller/synthwerk-llm/internal/store"
@@ -191,11 +194,25 @@ func run(ctx context.Context) error {
 		Source:              source,
 	}, st, prov, quota.Static{UserTokens: cfg.QuotaUserTokens, OrgTokens: cfg.QuotaOrgTokens}, logger) // entitlements replace Static with #31
 
+	// AI settings (#39): identity checks the membership and gives the plan.
+	var plans aisettings.Plans
+	if cfg.IdentityURL != "" {
+		ic, err := identity.New(cfg.IdentityURL)
+		if err != nil {
+			return err
+		}
+		plans = ic
+	} else {
+		logger.WarnContext(ctx, "AI settings routes answer 503: identity is not configured",
+			slog.String("event.name", "llm.settings.not_configured"))
+	}
+	settingsHandler := aisettings.New(chatHandler.Service(), st, plans, source, logger)
+
 	// Identity owns EVT_IDENTITY: the consumer waits for it and never creates it.
 	eraser := erasure.New(js, st, logger, erasure.Config{})
 
 	a, err := app.New(app.Deps{
-		DB: db, Log: logger, Chat: chatHandler, Verifier: verifier,
+		DB: db, Log: logger, Chat: chatHandler, Verifier: verifier, Settings: settingsHandler,
 		NATS: func(context.Context) error {
 			if !nc.IsConnected() {
 				return errors.New("not connected")

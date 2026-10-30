@@ -18,6 +18,7 @@ import (
 	"github.com/VelimirMueller/synthwerk-llm/internal/problem"
 	"github.com/VelimirMueller/synthwerk-llm/internal/provider"
 	"github.com/VelimirMueller/synthwerk-llm/internal/quota"
+	"github.com/VelimirMueller/synthwerk-llm/internal/settings"
 	"github.com/VelimirMueller/synthwerk-llm/internal/sse"
 	"github.com/VelimirMueller/synthwerk-llm/internal/store"
 )
@@ -85,12 +86,17 @@ func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 	if req.Model != nil {
 		alias = *req.Model
 	}
-	model, known := h.cfg.Aliases[alias]
-	if !known {
-		problem.Write(w, r, http.StatusBadRequest, problem.CodeInvalidRequest, "model is not a known alias.", 0)
+	ap, err := h.applied(r.Context(), o)
+	if err != nil {
+		h.internal(w, r, "llm.message.start_failed", err)
 		return
 	}
-	if utf8.RuneCountInString(req.Content) > h.cfg.MaxInputChars {
+	model, known := h.cfg.Aliases[alias]
+	if !known || !ap.Allows(alias) {
+		problem.Write(w, r, http.StatusBadRequest, problem.CodeInvalidRequest, "model is not an alias this org allows.", 0)
+		return
+	}
+	if utf8.RuneCountInString(req.Content) > ap.MaxInputChars {
 		problem.Write(w, r, http.StatusRequestEntityTooLarge, problem.CodeInputTooLarge, "", 0)
 		return
 	}
@@ -105,6 +111,8 @@ func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 		h.internal(w, r, "llm.quota.check_failed", err)
 		return
 	}
+	// The org's cap per user (#39) never raises the plan's limit, only lowers it.
+	limits.UserTokens = settings.Cap(limits.UserTokens, ap.UserTokensPerDay)
 
 	// The booking needs the history, which the store reads in the turn's
 	// transaction: build the model messages there and book their estimate plus the
@@ -116,7 +124,7 @@ func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 		Limits: limits,
 		Now:    now,
 		Tokens: func(past []store.Message) int64 {
-			msgs = h.history(past, req.Content)
+			msgs = h.history(past, req.Content, ap.SystemPrompt)
 			inputEstimate = provider.EstimateInput(msgs)
 			return int64(inputEstimate) + int64(h.cfg.QuotaReserveTokens)
 		},
@@ -142,11 +150,11 @@ func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 	// The store calls Tokens exactly once (store.Quota). This only guards a Store
 	// that breaks the contract: the model still gets its messages.
 	if msgs == nil {
-		msgs = h.history(turn.History, req.Content)
+		msgs = h.history(turn.History, req.Content, ap.SystemPrompt)
 		inputEstimate = provider.EstimateInput(msgs)
 	}
 
-	ans := h.stream(w, r, turn, provider.Request{Model: model, Messages: msgs}, alias)
+	ans := h.stream(w, r, turn, provider.Request{Model: model, Messages: msgs, Options: provider.Options{Temperature: ap.Temperature}}, alias)
 	h.finish(r.Context(), p, o, convID, turn.AssistantMessageID, alias, start, ans, inputEstimate)
 }
 
