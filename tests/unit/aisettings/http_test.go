@@ -165,6 +165,10 @@ func TestRefusedCallers(t *testing.T) {
 		"member":   h.TokenAs(t, "user-a", org, auth.RoleMember),
 		"operator": h.TokenAs(t, "user-a", org, auth.RoleOperator),
 		"widget":   h.Issuer.Mint(t, widget),
+		// Widget tokens of identity (#30): never an admin token, with a role claim or not.
+		"identity widget": h.WidgetToken(t, "user-a", org, "https://shop.example"),
+		"identity widget with admin role": h.WidgetToken(t, "user-a", org, "https://shop.example",
+			map[string]any{auth.ClaimRoles: authtest.Roles(org, auth.RoleAdmin, auth.RoleOwner)}),
 	}
 	for name, tok := range cases {
 		for _, method := range []string{http.MethodGet, http.MethodPut} {

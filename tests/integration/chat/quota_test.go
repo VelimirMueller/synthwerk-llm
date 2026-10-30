@@ -320,3 +320,33 @@ func TestQuotaSweepSettlesStuckBookings(t *testing.T) {
 		}
 	}
 }
+
+// Send - widget token (#30) - the user quota key is the token sub: the widget and the
+// user token of the same sub share one row; another sub of the org still chats.
+func TestQuotaWidgetTokenCountsForItsSub(t *testing.T) {
+	f := &fake.Provider{Reply: func(provider.Request) []string { return []string{strings.Repeat("abcd", 1000)} }}
+	const limit = 1100
+	r := newQuotaRig(t, f, quota.Limits{UserTokens: limit})
+	const origin = "https://shop.example"
+	wtok := r.WidgetToken(t, "user-a", "org-1", origin)
+
+	res := r.Do(t, http.MethodPost, "/v1/conversations/"+r.Create(t, wtok, "Origin", origin)+"/messages", wtok,
+		map[string]string{"content": "hi"}, "Origin", origin)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("widget send: status %d", res.StatusCode)
+	}
+	sse.All(res.Body)
+	waitStatus(t, r, "completed")
+	if used, _ := usage(t, r, "user-a"); used != 1004 {
+		t.Fatalf("user-a used %d, want 1004", used)
+	}
+	if scope := refused(t, send(t, r, r.Token(t, "user-a", "org-1")), limit); scope != "user" {
+		t.Fatalf("user token of the same sub: scope %q", scope)
+	}
+	wtokB := r.WidgetToken(t, "user-b", "org-1", origin)
+	res = r.Do(t, http.MethodPost, "/v1/conversations/"+r.Create(t, wtokB, "Origin", origin)+"/messages", wtokB,
+		map[string]string{"content": "hi"}, "Origin", origin)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("widget of user-b: status %d", res.StatusCode)
+	}
+}

@@ -71,6 +71,14 @@ func TestLoadRefuses(t *testing.T) {
 		"zero reserve":            {map[string]string{"SYNTHWERK_LLM_QUOTA_RESERVE_TOKENS": "0"}, "QUOTA_RESERVE_TOKENS"},
 		"identity url relative":   {map[string]string{"SYNTHWERK_LLM_IDENTITY_URL": "identity:8080"}, "IDENTITY_URL must be an absolute"},
 		"identity url with query": {map[string]string{"SYNTHWERK_LLM_IDENTITY_URL": "http://identity:8080/?x=1"}, "IDENTITY_URL must be an absolute"},
+		"widget issuer relative":  {map[string]string{"SYNTHWERK_LLM_WIDGET_ISSUER": "identity"}, "WIDGET_ISSUER must be an absolute"},
+		"widget issuer = oidc":    {map[string]string{"SYNTHWERK_LLM_WIDGET_ISSUER": "http://auth.localhost:8080"}, "WIDGET_ISSUER must differ"},
+		"widget jwks relative": {map[string]string{
+			"SYNTHWERK_LLM_WIDGET_ISSUER": "http://localhost:8080/identity", "SYNTHWERK_LLM_WIDGET_JWKS_URL": "/keys",
+		}, "WIDGET_JWKS_URL must be an absolute"},
+		"widget audience empty": {map[string]string{
+			"SYNTHWERK_LLM_WIDGET_ISSUER": "http://localhost:8080/identity", "SYNTHWERK_LLM_WIDGET_AUDIENCE": " , ",
+		}, "WIDGET_AUDIENCE must not be empty"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -104,5 +112,26 @@ func TestLoadIdentityURL(t *testing.T) {
 	c, err = config.Load(envOf(nil))
 	if err != nil || c.IdentityURL != "" {
 		t.Fatalf("unset: %q %v", c.IdentityURL, err)
+	}
+}
+
+// Load - widget issuer (#30): off by default; key set and audience default from the issuer.
+func TestLoadWidgetIssuer(t *testing.T) {
+	c, err := config.Load(envOf(nil))
+	if err != nil || c.WidgetIssuer != "" || c.WidgetJWKSURL != "" || c.WidgetAudiences != nil {
+		t.Fatalf("default: %q %q %v, err %v", c.WidgetIssuer, c.WidgetJWKSURL, c.WidgetAudiences, err)
+	}
+	c, err = config.Load(envOf(map[string]string{"SYNTHWERK_LLM_WIDGET_ISSUER": "http://localhost:8080/identity/"}))
+	if err != nil || c.WidgetJWKSURL != "http://localhost:8080/identity/.well-known/jwks.json" ||
+		len(c.WidgetAudiences) != 1 || c.WidgetAudiences[0] != config.DefaultWidgetAudience {
+		t.Fatalf("derived: %q %v, err %v", c.WidgetJWKSURL, c.WidgetAudiences, err)
+	}
+	c, err = config.Load(envOf(map[string]string{
+		"SYNTHWERK_LLM_WIDGET_ISSUER":   "http://localhost:8080/identity",
+		"SYNTHWERK_LLM_WIDGET_JWKS_URL": "http://identity:8080/.well-known/jwks.json",
+		"SYNTHWERK_LLM_WIDGET_AUDIENCE": "a, b",
+	}))
+	if err != nil || c.WidgetJWKSURL != "http://identity:8080/.well-known/jwks.json" || strings.Join(c.WidgetAudiences, ",") != "a,b" {
+		t.Fatalf("set: %q %v, err %v", c.WidgetJWKSURL, c.WidgetAudiences, err)
 	}
 }

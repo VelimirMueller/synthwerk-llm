@@ -94,6 +94,14 @@ type Config struct {
 	OIDCAudiences []string
 	// JWKSURL overrides OIDC discovery. Empty: discovery on the issuer.
 	JWKSURL string
+	// WidgetIssuer is the iss of the widget tokens of synthwerk-identity (#30): its
+	// public URL. Empty: llm refuses widget tokens.
+	WidgetIssuer string
+	// WidgetAudiences are the accepted aud values of widget tokens.
+	WidgetAudiences []string
+	// WidgetJWKSURL is the widget key set as llm reaches it. Identity has no
+	// discovery document: default <WidgetIssuer>/.well-known/jwks.json.
+	WidgetJWKSURL string
 	// NATSURL of the bus (secret: may hold credentials).
 	NATSURL string
 	// IdentityURL is the identity base URL as llm reaches it (#39). The AI settings
@@ -220,6 +228,7 @@ func Load(getenv func(string) string) (Config, error) {
 		errs = append(errs, fmt.Errorf("%s is required", env.Key(Service, "OIDC_AUDIENCE")))
 	}
 	c.JWKSURL = get("JWKS_URL", "")
+	errs = append(errs, c.loadWidget(get)...)
 	c.IdentityURL = get("IDENTITY_URL", "")
 	if c.IdentityURL != "" {
 		u, err := url.Parse(c.IdentityURL)
@@ -278,3 +287,44 @@ func ParseAliases(s string) (map[string]string, error) {
 
 // ValidAlias reports whether s has the alias shape of the contract.
 func ValidAlias(s string) bool { return aliasRe.MatchString(s) }
+
+// DefaultWidgetAudience is the aud of widget tokens that identity sets by default.
+const DefaultWidgetAudience = "synthwerk-api"
+
+// widgetJWKSPath is where identity serves the widget key set.
+const widgetJWKSPath = "/.well-known/jwks.json"
+
+// loadWidget reads the widget token issuer (#30). Without WIDGET_ISSUER the other
+// widget keys are ignored and llm trusts Zitadel only.
+func (c *Config) loadWidget(get func(name, def string) string) []error {
+	c.WidgetIssuer = get("WIDGET_ISSUER", "")
+	if c.WidgetIssuer == "" {
+		return nil
+	}
+	var errs []error
+	if !absHTTP(c.WidgetIssuer) {
+		errs = append(errs, fmt.Errorf("%s must be an absolute http(s) URL", env.Key(Service, "WIDGET_ISSUER")))
+	}
+	if c.WidgetIssuer == c.OIDCIssuer {
+		errs = append(errs, fmt.Errorf("%s must differ from %s", env.Key(Service, "WIDGET_ISSUER"), env.Key(Service, "OIDC_ISSUER")))
+	}
+	for a := range strings.SplitSeq(get("WIDGET_AUDIENCE", DefaultWidgetAudience), ",") {
+		if a = strings.TrimSpace(a); a != "" {
+			c.WidgetAudiences = append(c.WidgetAudiences, a)
+		}
+	}
+	if len(c.WidgetAudiences) == 0 {
+		errs = append(errs, fmt.Errorf("%s must not be empty", env.Key(Service, "WIDGET_AUDIENCE")))
+	}
+	c.WidgetJWKSURL = get("WIDGET_JWKS_URL", strings.TrimSuffix(c.WidgetIssuer, "/")+widgetJWKSPath)
+	if !absHTTP(c.WidgetJWKSURL) {
+		errs = append(errs, fmt.Errorf("%s must be an absolute http(s) URL", env.Key(Service, "WIDGET_JWKS_URL")))
+	}
+	return errs
+}
+
+// absHTTP reports whether s is an absolute http(s) URL without user info.
+func absHTTP(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && u.User == nil
+}

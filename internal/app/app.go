@@ -1,11 +1,18 @@
 // Package app wires llm: the health probes, the chat routes behind the token check,
-// and the HTTP middlewares. It starts from the example service of the
+// and the HTTP middlewares.
+//
+// Two token issuers (#30): Verifier checks Zitadel user tokens, WidgetVerifier the
+// widget tokens of synthwerk-identity. A widget token passes only on the chat routes
+// the widget uses (create, read, send) and must carry synthwerk:origin, which the
+// chat handler binds to the Origin header. Export and AI settings take user tokens
+// only. It starts from the example service of the
 // synthwerk-contracts Go kit (go/examples/service).
 package app
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -45,6 +52,9 @@ type Deps struct {
 	Log      *slog.Logger
 	Chat     *chat.Handler
 	Verifier *auth.Verifier
+	// WidgetVerifier checks the widget tokens of synthwerk-identity (#30). Nil: llm
+	// refuses widget tokens (401).
+	WidgetVerifier *auth.Verifier
 	// Settings serves /v1/ai-settings (#39). Nil: no settings routes.
 	Settings *aisettings.Handler
 	// NATS reports the bus connection for /readyz. Nil: no check.
@@ -75,6 +85,9 @@ func New(d Deps, cfg Config) (*App, error) {
 		// Not critical: a token check fails closed (401/503) while the keys are away.
 		checks = append(checks, health.Check{Name: "jwks", Run: d.Verifier.Ready, Detail: "token keys unavailable"})
 	}
+	if d.WidgetVerifier != nil {
+		checks = append(checks, health.Check{Name: "jwks_widget", Run: d.WidgetVerifier.Ready, Detail: "widget token keys unavailable"})
+	}
 	h, err := health.New(cfg.Version, cfg.Commit, checks...)
 	if err != nil {
 		return nil, err
@@ -83,17 +96,20 @@ func New(d Deps, cfg Config) (*App, error) {
 
 	mux := http.NewServeMux()
 	h.Register(mux)
-	if d.Chat != nil {
-		if d.Verifier == nil {
-			return nil, errors.New("app: the chat routes need a token verifier")
-		}
-		d.Chat.Register(mux, func(next http.Handler) http.Handler { return auth.Middleware(d.Verifier, next) })
+	if (d.Chat != nil || d.Settings != nil) && d.Verifier == nil {
+		return nil, errors.New("app: the chat and settings routes need a token verifier")
 	}
-	if d.Settings != nil {
-		if d.Verifier == nil {
-			return nil, errors.New("app: the settings routes need a token verifier")
+	if d.Verifier != nil {
+		chatAuthn, userAuthn, err := authn(d.Verifier, d.WidgetVerifier)
+		if err != nil {
+			return nil, err
 		}
-		d.Settings.Register(mux, func(next http.Handler) http.Handler { return auth.Middleware(d.Verifier, next) })
+		if d.Chat != nil {
+			d.Chat.Register(mux, chatAuthn, userAuthn)
+		}
+		if d.Settings != nil {
+			d.Settings.Register(mux, userAuthn)
+		}
 	}
 	// The log line sits inside the span. Probes create no span. Recover sits inside
 	// the log line, so a panic still logs one request line with status 500.
@@ -102,6 +118,60 @@ func New(d Deps, cfg Config) (*App, error) {
 			return r.URL.Path != "/healthz" && r.URL.Path != "/readyz"
 		}))
 	return a, nil
+}
+
+// authn returns the token checks of the routes. chat: user and widget tokens.
+// user: user tokens only; a widget token gets 403.
+func authn(user, widget *auth.Verifier) (chat, userOnly func(http.Handler) http.Handler, err error) {
+	var tokens auth.TokenVerifier = user
+	widgetIssuer := ""
+	if widget != nil {
+		if tokens, err = auth.NewMultiVerifier(user, widget); err != nil {
+			return nil, nil, fmt.Errorf("app: %w", err)
+		}
+		widgetIssuer = widget.Issuer()
+	}
+	chat = func(next http.Handler) http.Handler {
+		return auth.Middleware(tokens, widgetOrigin(widgetIssuer, next))
+	}
+	userOnly = func(next http.Handler) http.Handler {
+		return auth.Middleware(tokens, onlyUser(user.Issuer(), next))
+	}
+	return chat, userOnly, nil
+}
+
+// widgetOrigin lets a widget token through only with a synthwerk:origin claim, and
+// drops its roles and scopes: a widget token is never an admin token. The chat
+// handler compares the claim with the Origin header.
+func widgetOrigin(widgetIssuer string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := auth.FromContext(r.Context())
+		if ok && widgetIssuer != "" && p.Issuer == widgetIssuer {
+			if origin, _ := p.Raw[auth.ClaimOrigin].(string); origin == "" {
+				problem.Write(w, r, http.StatusForbidden, problem.CodeForbidden, "", 0)
+				return
+			}
+			wp := *p
+			wp.Roles, wp.Scopes = nil, nil
+			r = r.WithContext(auth.WithPrincipal(r.Context(), &wp))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// onlyUser refuses every token that is not a user token of the user issuer, and every
+// token with a synthwerk:origin claim (403).
+func onlyUser(userIssuer string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := auth.FromContext(r.Context())
+		if ok {
+			if _, widget := p.Raw[auth.ClaimOrigin]; widget || p.Issuer != userIssuer {
+				problem.Write(w, r, http.StatusForbidden, problem.CodeForbidden, "", 0)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Handler is the HTTP handler of the service.

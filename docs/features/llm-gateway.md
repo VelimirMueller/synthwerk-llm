@@ -1,8 +1,9 @@
-# LLM gateway (chat slice, M2 #32; quotas #33; own data #41; AI settings #39)
+# LLM gateway (chat slice, M2 #32; quotas #33; own data #41; AI settings #39; widget tokens #30)
 
 > - A signed-in user creates a conversation, sends a message and gets the answer token by token as Server-Sent Events.
 > - The model comes from `SYNTHWERK_LLM_PROVIDER` (`ollama`, `openai_compat`, `fake`). No silent fallback.
 > - A request without a valid user token gets 401 before any database or model call.
+> - Two token issuers: Zitadel (user tokens) and synthwerk-identity (widget tokens, #30). A widget token works only on create, read and send, only from its `synthwerk:origin`. Export and AI settings refuse it (403).
 > - A conversation belongs to one user in one org. Postgres row level security enforces it.
 > - Logs, spans and events hold metadata only. Never the prompt, never the answer.
 > - Every finished answer emits `dev.synthwerk.llm.message.completed.v1` on the stream `EVT_LLM` (kit outbox).
@@ -22,17 +23,24 @@ Contract: `synthwerk-contracts/openapi/llm/openapi.yaml`. All routes need `Autho
 | GET | `/v1/me/export` | 200 `LlmExport`: every conversation, message and own quota row of the token `sub`, in every org. Widget token: 403. |
 | GET | `/v1/ai-settings` | 200 `AiSettings` of the token's org with its `bounds`. Owner or admin only. |
 | PUT | `/v1/ai-settings` | 200 `AiSettings` after a full replace. `version` must be the one read (409 `version_conflict`). |
-| GET | `/healthz`, `/readyz` | Kit health. `/readyz` checks `postgres`, `nats` (critical), `jwks` and `erasure` (degraded only). |
+| GET | `/healthz`, `/readyz` | Kit health. `/readyz` checks `postgres`, `nats` (critical), `jwks`, `jwks_widget` (with a widget issuer) and `erasure` (degraded only). |
 
 Refusal order of a send. The model call is last:
 
-1. Token (kit `auth.Middleware`, JWKS) → 401 `unauthenticated`.
-2. `synthwerk:origin` claim differs from `Origin` → 403 `forbidden`.
+1. Token (kit `auth.Middleware` with a `MultiVerifier`: Zitadel JWKS, or the identity widget JWKS by exact `iss`) → 401 `unauthenticated`.
+2. Widget token (issuer `WIDGET_ISSUER`) without a string `synthwerk:origin` → 403. Its roles and scopes are dropped. `synthwerk:origin` claim differs from `Origin` → 403 `forbidden`.
 3. Body → 400 `invalid_request`. Conversation of another owner → 404. Read the org's AI settings: a model the org does not allow → 400; over the org's `max_input_chars` (at most `MAX_INPUT_CHARS`) → 413 `input_too_large`.
 4. More than `MAX_STREAMS_PER_OWNER` open streams → 429 `too_many_streams`. Read the quota limits.
 5. Store the turn and book the quota in one transaction. Over quota → 429 `quota_exhausted`, nothing stored. Wait up to `QUEUE_TIMEOUT` for a model slot → 503 `model_unavailable`. Call the provider.
 
 After the first byte the status stays 200; a failure is an `error` event. A client that closes the stream cancels the model call. The partial answer is stored with status `canceled`.
+
+## Widget tokens (#30)
+
+- Identity signs them: ES256, `typ` `at+jwt`, key set at identity `/.well-known/jwks.json`, at most 15 min, `client_id` = app id, `synthwerk:origin`, no roles.
+- llm trusts them only with `SYNTHWERK_LLM_WIDGET_ISSUER`. Unset: widget tokens get 401.
+- Routes: `POST /v1/conversations`, `GET /v1/conversations/{id}`, `POST /v1/conversations/{id}/messages`. `GET /v1/me/export` and `/v1/ai-settings` answer 403 to every token of the widget issuer and to every token with `synthwerk:origin`.
+- Owner = token org and `sub`, as for a user token: the AI settings and the org quota of the token org apply; the user quota key is the `sub`. A user token of the same `sub` and org shares the conversations and the quota row.
 
 ## Stream
 
@@ -138,11 +146,13 @@ Produced: `dev.synthwerk.llm.message.completed.v1` on `evt.llm.message.completed
 
 ## Config
 
-`SYNTHWERK_LLM_*` (see `cmd/llm/main.go` and `internal/config`): `PROVIDER`, `BASE_URL`, `API_KEY[_FILE]`, `MODEL_ALIASES` (`default=qwen3.5:4b`; the alias `default` must exist), `SYSTEM_PROMPT`, `MAX_INPUT_CHARS` (8000), `MAX_STREAMS_PER_OWNER` (2), `MAX_CONTEXT_CHARS` (24000), `STREAM_TIMEOUT` (120s), `PROVIDER_CONCURRENCY` (1), `QUEUE_TIMEOUT` (10s), `FAKE_DELAY` (0s), `QUOTA_USER_TOKENS` (50000 per UTC day, 0 = no limit), `QUOTA_ORG_TOKENS` (500000, 0 = no limit), `QUOTA_RESERVE_TOKENS` (1024; a non-zero limit must be above it), `OIDC_ISSUER`, `OIDC_AUDIENCE`, `JWKS_URL`, `IDENTITY_URL` (identity base URL for the AI settings; empty = `/v1/ai-settings` answers 503), `DATABASE_URL`, `NATS_URL`, `HTTP_ADDR`.
+`SYNTHWERK_LLM_*` (see `cmd/llm/main.go` and `internal/config`): `PROVIDER`, `BASE_URL`, `API_KEY[_FILE]`, `MODEL_ALIASES` (`default=qwen3.5:4b`; the alias `default` must exist), `SYSTEM_PROMPT`, `MAX_INPUT_CHARS` (8000), `MAX_STREAMS_PER_OWNER` (2), `MAX_CONTEXT_CHARS` (24000), `STREAM_TIMEOUT` (120s), `PROVIDER_CONCURRENCY` (1), `QUEUE_TIMEOUT` (10s), `FAKE_DELAY` (0s), `QUOTA_USER_TOKENS` (50000 per UTC day, 0 = no limit), `QUOTA_ORG_TOKENS` (500000, 0 = no limit), `QUOTA_RESERVE_TOKENS` (1024; a non-zero limit must be above it), `OIDC_ISSUER`, `OIDC_AUDIENCE`, `JWKS_URL`, `WIDGET_ISSUER` (iss of identity widget tokens; empty = refused), `WIDGET_AUDIENCE` (`synthwerk-api`), `WIDGET_JWKS_URL` (default `<WIDGET_ISSUER>/.well-known/jwks.json`; set the internal URL in compose), `IDENTITY_URL` (identity base URL for the AI settings; empty = `/v1/ai-settings` answers 503), `DATABASE_URL`, `NATS_URL`, `HTTP_ADDR`.
 
 ## Tests
 
 - `tests/unit/chat` — `Send - no valid token (none, malformed, expired, bad signature, other issuer, wrong aud, alg none, HS256, no sub, no org) - 401, no store call, no model call`; `Send - other origin - 403`.
+- `tests/unit/chat/widget_test.go` — `Create, Get, Send - widget token from its origin - 201, 200, stream, owner = token org and sub`; `widget token - another origin, no Origin, no or empty or non-string synthwerk:origin - 403`; `widget token signed by the user issuer, other aud, expired - 401`; `ExportMe - widget token, also with an admin role claim - 403`; `widget issuer not configured - 401`.
+- `tests/integration/chat` — `Send - widget token - the user quota key is the token sub`; `Send - widget token - the org input limit of the token org applies`.
 - `tests/integration/chat` (Postgres + NATS in Testcontainers, `go test -tags integration`) — streaming with arrival gaps, user isolation and 404 for another owner or org, RLS without session vars, log and span canaries on success, provider down, mid-stream failure, client abort and 401; 413, 429, abort keeps the partial answer, relay to `EVT_LLM` without text, finish rollback, startup sweep.
 - `tests/integration/chat/quota_test.go` — `Send - user over quota - 429 quota_exhausted with scope user, no model call, nothing stored`; `Send - org over quota - 429 with scope org for another user of the org`; `Send - many users of one org at once - exactly as many streams start as bookings fit`; `Finish - answer ends early - the booking settles to what was spent`; `Startup - answer stuck in streaming - sweep charges its full booking`.
 - `tests/unit/chat/export_test.go` — `ExportMe - user token - 200 LlmExport with every row in order, owner = token sub`; `ExportMe - user without rows - 200 with two empty lists`; `ExportMe - widget token - 403 forbidden, no store call`; `ExportMe - store fails before the first row - 500 problem`; `ExportMe - more rows than the contract allows - 500 before the first byte`; `ExportMe - store fails after the first row - connection aborted, never valid JSON`. `GET /v1/me/export` is in the 401 table of `auth_test.go`.
@@ -158,11 +168,12 @@ Produced: `dev.synthwerk.llm.message.completed.v1` on `evt.llm.message.completed
 
 ## Not in this slice
 
-Entitlement-based limits (#31, the `quota.Source` seam is ready), a `GET` of the quota state for the widget, deletion of old `quota_usage` rows, deletion of the user's `actor` in old outbox rows and in published `EVT_LLM` facts (retention 30 days), Anthropic adapter (E4), `GET /v1/models`, list/delete/resume of conversations, a second DB role for migrations, scope checks (claim names wait for #28/#30).
+Entitlement-based limits (#31, the `quota.Source` seam is ready), a `GET` of the quota state for the widget, deletion of old `quota_usage` rows, deletion of the user's `actor` in old outbox rows and in published `EVT_LLM` facts (retention 30 days), Anthropic adapter (E4), `GET /v1/models`, list/delete/resume of conversations, a second DB role for migrations, scope checks (claim names wait for #28).
 
 ## Changes
 
 | Date | Change |
 |---|---|
 | 2026-10-30 | `GET /v1/me/export` and the `user.deleted.v1` consumer (synthwerk#41). Migration `0004_own_data.sql`. `/readyz` check `erasure` (degraded only). Contracts `go` at the #41 commit; bump to `v0.6.0` once tagged. |
+| 2026-10-30 | Widget tokens of synthwerk-identity on the chat routes (synthwerk#30): `SYNTHWERK_LLM_WIDGET_ISSUER`, `_AUDIENCE`, `_JWKS_URL`; `/readyz` check `jwks_widget`. Contracts `go` `v0.8.0` (kit `MultiVerifier`). |
 | 2026-10-30 | AI settings per org: `GET`/`PUT /v1/ai-settings`, `ai_settings.changed.v1`, migration `0005_ai_settings.sql`, `SYNTHWERK_LLM_IDENTITY_URL` (synthwerk#39). Contracts `go` at the #39 commit (contracts PR #26). |

@@ -19,6 +19,9 @@
 //	SYNTHWERK_LLM_OIDC_ISSUER      token issuer (required)
 //	SYNTHWERK_LLM_OIDC_AUDIENCE    accepted audiences, comma list (required)
 //	SYNTHWERK_LLM_JWKS_URL         key set URL; empty = OIDC discovery on the issuer
+//	SYNTHWERK_LLM_WIDGET_ISSUER    iss of identity widget tokens (#30); empty = widget tokens refused
+//	SYNTHWERK_LLM_WIDGET_AUDIENCE  accepted widget audiences, comma list, default synthwerk-api
+//	SYNTHWERK_LLM_WIDGET_JWKS_URL  widget key set URL, default <widget issuer>/.well-known/jwks.json
 //	SYNTHWERK_LLM_IDENTITY_URL     identity base URL for the AI settings (#39); empty = /v1/ai-settings answers 503
 //	SYNTHWERK_LLM_QUOTA_USER_TOKENS  tokens per UTC day per user in an org, default 50000 (0 = no limit)
 //	SYNTHWERK_LLM_QUOTA_ORG_TOKENS   tokens per UTC day per org, default 500000 (0 = no limit)
@@ -171,6 +174,17 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Widget tokens of identity (#30): own issuer, key set and audience; chat routes only.
+	var widgetVerifier *auth.Verifier
+	if cfg.WidgetIssuer != "" {
+		widgetVerifier, err = auth.NewVerifier(auth.Config{Issuer: cfg.WidgetIssuer, Audiences: cfg.WidgetAudiences, JWKSURL: cfg.WidgetJWKSURL})
+		if err != nil {
+			return err
+		}
+	} else {
+		logger.WarnContext(ctx, "widget tokens are refused: no widget issuer",
+			slog.String("event.name", "llm.widget.off"))
+	}
 	prov, err := registry.New(cfg)
 	if err != nil {
 		return err
@@ -212,7 +226,7 @@ func run(ctx context.Context) error {
 	eraser := erasure.New(js, st, logger, erasure.Config{})
 
 	a, err := app.New(app.Deps{
-		DB: db, Log: logger, Chat: chatHandler, Verifier: verifier, Settings: settingsHandler,
+		DB: db, Log: logger, Chat: chatHandler, Verifier: verifier, WidgetVerifier: widgetVerifier, Settings: settingsHandler,
 		NATS: func(context.Context) error {
 			if !nc.IsConnected() {
 				return errors.New("not connected")
