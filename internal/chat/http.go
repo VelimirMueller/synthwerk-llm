@@ -25,6 +25,7 @@ func (h *Handler) Register(mux *http.ServeMux, authn func(http.Handler) http.Han
 	mux.Handle("POST /v1/conversations", authn(http.HandlerFunc(h.create)))
 	mux.Handle("GET /v1/conversations/{id}", authn(http.HandlerFunc(h.get)))
 	mux.Handle("POST /v1/conversations/{id}/messages", authn(http.HandlerFunc(h.send)))
+	mux.Handle("GET /v1/me/export", authn(http.HandlerFunc(h.exportMe)))
 }
 
 // owner returns the principal's owner and checks the widget origin claim (#30).

@@ -46,6 +46,8 @@ type Deps struct {
 	Verifier *auth.Verifier
 	// NATS reports the bus connection for /readyz. Nil: no check.
 	NATS func(ctx context.Context) error
+	// Erasure reports the user.deleted consumer for /readyz (not critical). Nil: no check.
+	Erasure func(ctx context.Context) error
 }
 
 // App holds the dependencies of the service.
@@ -61,6 +63,10 @@ func New(d Deps, cfg Config) (*App, error) {
 	checks := []health.Check{{Name: "postgres", Critical: true, Run: d.DB.Ping, Detail: "postgres unreachable"}}
 	if d.NATS != nil {
 		checks = append(checks, health.Check{Name: "nats", Critical: true, Run: d.NATS, Detail: "nats not connected"})
+	}
+	if d.Erasure != nil {
+		// Not critical: identity creates EVT_IDENTITY; until then the events wait there.
+		checks = append(checks, health.Check{Name: "erasure", Run: d.Erasure, Detail: "user.deleted consumer not attached"})
 	}
 	if d.Verifier != nil {
 		// Not critical: a token check fails closed (401/503) while the keys are away.

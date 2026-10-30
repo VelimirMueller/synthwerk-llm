@@ -38,6 +38,8 @@ type Store interface {
 	ConversationAlias(ctx context.Context, o store.Owner, id string) (string, error)
 	StartTurn(ctx context.Context, o store.Owner, convID, text string, q store.Quota) (store.Turn, error)
 	Finish(ctx context.Context, o store.Owner, f store.Final, ev cloudevents.Event) error
+	// Export streams every row of user in every org to sink (GET /v1/me/export).
+	Export(ctx context.Context, user string, sink store.ExportSink) error
 }
 
 // Config of the handler.

@@ -1,0 +1,21 @@
+{
+  "specversion": "1.0",
+  "id": "019a3c20-4d5e-7f60-8a1b-2c3d4e5f6a7b",
+  "source": "/synthwerk/identity/dev",
+  "type": "dev.synthwerk.identity.user.deleted.v1",
+  "subject": "396370217707541255",
+  "time": "2026-10-30T10:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "https://schemas.synthwerk.dev/events/identity/user.deleted.v1.json",
+  "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203334-01",
+  "actor": "user:396370217707541255",
+  "data": {
+    "user_sub": "396370217707541255",
+    "deleted_orgs": [
+      {
+        "org_id": "019a3c20-1a2b-7c3d-8e4f-5a6b7c8d9e0f",
+        "zitadel_org_id": "396370208765350664"
+      }
+    ]
+  }
+}
