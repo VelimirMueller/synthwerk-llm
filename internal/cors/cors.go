@@ -12,6 +12,7 @@ package cors
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -34,6 +35,8 @@ const (
 	DefaultTTL           = 60 * time.Second
 	DefaultMaxEntries    = 4096
 	DefaultLookupTimeout = 2 * time.Second
+	// DefaultMaxLookups bounds the identity calls in flight at the same time.
+	DefaultMaxLookups = 8
 	// MaxAge is the Access-Control-Max-Age of an allowed preflight, in seconds.
 	MaxAge = "600"
 	// AllowHeaders are the request headers the widget sends.
@@ -54,6 +57,10 @@ type Config struct {
 	MaxEntries int
 	// LookupTimeout bounds one identity call. 0: DefaultLookupTimeout.
 	LookupTimeout time.Duration
+	// MaxLookups bounds the identity calls in flight. When all are busy, a new
+	// origin is denied at once, without a call, and nothing is cached: a flood of
+	// random origins cannot queue work on llm or identity. 0: DefaultMaxLookups.
+	MaxLookups int
 	// Now is the clock. Nil: time.Now.
 	Now func() time.Time
 	// Log gets one line per failed lookup. Nil: no log.
@@ -71,7 +78,11 @@ type Policy struct {
 	mu    sync.Mutex
 	cache map[string]entry
 	group singleflight.Group
+	slots chan struct{}
 }
+
+// errBusy: every lookup slot is in use; the origin is denied without a call.
+var errBusy = errors.New("cors: every identity lookup slot is busy")
 
 // New returns a Policy. Static entries that are not canonical never match.
 func New(c Config) *Policy {
@@ -84,11 +95,14 @@ func New(c Config) *Policy {
 	if c.LookupTimeout <= 0 {
 		c.LookupTimeout = DefaultLookupTimeout
 	}
+	if c.MaxLookups <= 0 {
+		c.MaxLookups = DefaultMaxLookups
+	}
 	if c.Now == nil {
 		c.Now = time.Now
 	}
 	c.Static = slices.Clone(c.Static)
-	return &Policy{cfg: c, cache: map[string]entry{}}
+	return &Policy{cfg: c, cache: map[string]entry{}, slots: make(chan struct{}, c.MaxLookups)}
 }
 
 // Allowed reports whether the Origin header value may read the answer. A value
@@ -114,6 +128,12 @@ func (p *Policy) Allowed(ctx context.Context, header string) bool {
 		if allowed, ok := p.cached(origin); ok {
 			return allowed, nil
 		}
+		select {
+		case p.slots <- struct{}{}:
+			defer func() { <-p.slots }()
+		default:
+			return false, errBusy
+		}
 		lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), p.cfg.LookupTimeout)
 		defer cancel()
 		allowed, err := p.cfg.Lookup.WidgetOriginListed(lctx, origin)
@@ -124,7 +144,8 @@ func (p *Policy) Allowed(ctx context.Context, header string) bool {
 		return allowed, nil
 	})
 	if err != nil {
-		if p.cfg.Log != nil {
+		// A busy deny is not logged: a flood would turn into a log flood.
+		if p.cfg.Log != nil && !errors.Is(err, errBusy) {
 			p.cfg.Log.WarnContext(ctx, "CORS origin lookup failed, origin denied",
 				slog.String("event.name", "llm.cors.lookup_failed"), slog.String("exception.message", err.Error()))
 		}

@@ -156,6 +156,42 @@ func TestAllowed(t *testing.T) {
 			}
 		}
 	})
+	t.Run("Allowed - 100 parallel new origins, identity hangs, 4 slots - at most 4 lookups, the rest denied at once, nothing cached, slots free again", func(t *testing.T) {
+		id := &fakeIdentity{listed: []string{shop}, block: make(chan struct{})}
+		p := cors.New(cors.Config{Static: []string{"http://localhost:3000"}, Lookup: id, MaxLookups: 4})
+		var wg sync.WaitGroup
+		var yes atomic.Int32
+		start := time.Now()
+		for i := range 100 {
+			wg.Go(func() {
+				if p.Allowed(context.Background(), fmt.Sprintf("https://flood%d.example", i)) {
+					yes.Add(1)
+				}
+			})
+		}
+		for len(id.calls()) < 4 {
+			time.Sleep(time.Millisecond)
+		}
+		// The service keeps answering: the static list needs no slot.
+		if !p.Allowed(t.Context(), "http://localhost:3000") {
+			t.Fatal("static origin denied during the flood")
+		}
+		time.Sleep(20 * time.Millisecond)
+		if n := len(id.calls()); n > 4 {
+			t.Fatalf("%d lookups in flight, want at most 4", n)
+		}
+		close(id.block)
+		wg.Wait()
+		if yes.Load() != 0 || len(id.calls()) > 4 || p.Len() > 4 || time.Since(start) > 2*time.Second {
+			t.Fatalf("yes %d lookups %d cached %d after %s", yes.Load(), len(id.calls()), p.Len(), time.Since(start))
+		}
+		id.mu.Lock()
+		id.block = nil
+		id.mu.Unlock()
+		if !p.Allowed(t.Context(), shop) {
+			t.Fatal("after the flood a listed origin is denied: slots not freed")
+		}
+	})
 	t.Run("Allowed - 50 parallel requests for one new origin - one lookup", func(t *testing.T) {
 		id := &fakeIdentity{listed: []string{shop}, block: make(chan struct{})}
 		p := cors.New(cors.Config{Lookup: id})
