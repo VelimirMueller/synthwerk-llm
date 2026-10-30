@@ -205,8 +205,9 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, turn store.Turn
 	}
 	ans.called = true
 	defer func() { _ = st.Close() }()
-	// Runs after the reader stopped (deferred below): the chain may have fallen over
-	// before the first piece, so ask at the end who answered.
+	// Runs after the reader stopped (deferred below, so it runs first) and before
+	// st.Close: the chain may have fallen over before the first piece, so ask at the
+	// end who answered. A plain provider stream reports (h.provider.Name(), true).
 	defer func() {
 		ans.provider, ans.called = provider.AnsweredBy(st, h.provider.Name())
 	}()

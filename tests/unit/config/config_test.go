@@ -209,9 +209,9 @@ func TestLoadFallbacksRefuse(t *testing.T) {
 		"no region":               {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACK_BACKUP_REGION": ""}), "FALLBACK_BACKUP_REGION is required"},
 		"unknown alias":           {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACK_BACKUP_MODEL_ALIASES": "large=x"}), "with an alias of SYNTHWERK_LLM_MODEL_ALIASES"},
 		"no alias":                {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACK_BACKUP_MODEL_ALIASES": ""}), "must name at least one alias"},
-		"bad name":                {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACKS": "Back-Up"}), `"Back-Up" must be a new name`},
-		"name of the primary":     {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACKS": "ollama"}), `"ollama" must be a new name`},
-		"name twice":              {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACKS": "backup,backup"}), `"backup" must be a new name`},
+		"bad name":                {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACKS": "Back-Up"}), `"Back-Up" must be a name like backup`},
+		"name of the primary":     {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACKS": "ollama"}), `"ollama" is a duplicate name or the primary's`},
+		"name twice":              {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACKS": "backup,backup"}), `"backup" is a duplicate name or the primary's`},
 		"unknown provider":        {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACK_BACKUP_PROVIDER": "anthropic"}), "FALLBACK_BACKUP_PROVIDER=\"anthropic\" must be one of"},
 		"relative url":            {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACK_BACKUP_BASE_URL": "llm/v1"}), "FALLBACK_BACKUP_BASE_URL must be an absolute"},
 		"fake in prd": {fallbackEnv(map[string]string{

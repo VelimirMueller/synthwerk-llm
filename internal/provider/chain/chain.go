@@ -363,6 +363,9 @@ func (s *stream) Next() (string, error) {
 	}
 	for {
 		piece, err := s.cur.Next()
+		// A timer that fired has cancelled the attempt context: even a piece that
+		// came at the same moment cannot be trusted to continue, so the timeout
+		// wins. Nothing went to the client yet, so the next link is safe.
 		timedOut := fired(s.timer)
 		s.timer = nil
 		l := s.links[s.i]
@@ -405,7 +408,8 @@ func (s *stream) Result() provider.Result {
 	return s.cur.Result()
 }
 
-// Close implements provider.Stream.
+// Close implements provider.Stream. Never concurrent with Next (provider.Stream).
+// The chat handler always closes a stream, so a probe slot is always released.
 func (s *stream) Close() error {
 	fired(s.timer)
 	s.timer = nil

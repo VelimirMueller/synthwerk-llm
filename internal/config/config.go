@@ -258,20 +258,20 @@ func Load(getenv func(string) string) (Config, error) {
 		errs = append(errs, fmt.Errorf("%s must be <= 8000 (contract limit)", env.Key(Service, "MAX_INPUT_CHARS")))
 	}
 	durs := []struct {
-		name string
-		def  string
-		dst  *time.Duration
+		name     string
+		def      string
+		dst      *time.Duration
+		positive bool // 0 is refused
 	}{
-		{"STREAM_TIMEOUT", "120s", &c.StreamTimeout},
-		{"QUEUE_TIMEOUT", "10s", &c.QueueTimeout},
-		{"FAKE_DELAY", "0s", &c.FakeDelay},
-		{"FIRST_TOKEN_TIMEOUT", DefaultFirstTokenTimeout, &c.FirstTokenTimeout},
-		{"BREAKER_OPEN", DefaultBreakerOpen, &c.BreakerOpen},
+		{"STREAM_TIMEOUT", "120s", &c.StreamTimeout, false},
+		{"QUEUE_TIMEOUT", "10s", &c.QueueTimeout, false},
+		{"FAKE_DELAY", "0s", &c.FakeDelay, false},
+		{"FIRST_TOKEN_TIMEOUT", DefaultFirstTokenTimeout, &c.FirstTokenTimeout, true},
+		{"BREAKER_OPEN", DefaultBreakerOpen, &c.BreakerOpen, true},
 	}
 	for _, d := range durs {
 		v, err := time.ParseDuration(get(d.name, d.def))
-		positive := d.name == "FIRST_TOKEN_TIMEOUT" || d.name == "BREAKER_OPEN"
-		if err != nil || v < 0 || (positive && v == 0) {
+		if err != nil || v < 0 || (d.positive && v == 0) {
 			errs = append(errs, fmt.Errorf("%s must be a duration like 30s", env.Key(Service, d.name)))
 		}
 		*d.dst = v
@@ -344,13 +344,20 @@ func (c *Config) loadFallbacks(getenv func(string) string, get func(name, def st
 		if name == "" {
 			continue
 		}
-		if !fallbackNameRe.MatchString(name) || seen[name] {
-			errs = append(errs, fmt.Errorf("%s: %q must be a new name like backup (a-z, 0-9, _), not the primary's", env.Key(Service, "FALLBACKS"), name))
+		if !fallbackNameRe.MatchString(name) {
+			errs = append(errs, fmt.Errorf("%s: %q must be a name like backup (a-z, 0-9, _)", env.Key(Service, "FALLBACKS"), name))
+			continue
+		}
+		if seen[name] {
+			errs = append(errs, fmt.Errorf("%s: %q is a duplicate name or the primary's", env.Key(Service, "FALLBACKS"), name))
 			continue
 		}
 		seen[name] = true
 		f, ferrs := c.loadFallback(getenv, get, name)
-		errs = append(errs, ferrs...)
+		if len(ferrs) > 0 {
+			errs = append(errs, ferrs...)
+			continue
+		}
 		c.Fallbacks = append(c.Fallbacks, f)
 	}
 	return errs

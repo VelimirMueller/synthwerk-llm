@@ -55,8 +55,10 @@ func TestSendFallsOverToTheFallback(t *testing.T) {
 		t.Fatalf("event data %v", data)
 	}
 	// The quota counts the fallback's usage: its input estimate plus "from backup".
+	// booking and reserve are the constants of quota_test.go: input = booking - reserve.
+	const input = booking - reserve
 	want := int64(data["input_tokens"].(float64) + data["output_tokens"].(float64))
-	if used, reserved := usage(t, r, "user-a"); used != want || reserved != 0 || want != booking-reserve+2 {
+	if used, reserved := usage(t, r, "user-a"); used != want || reserved != 0 || want != input+2 {
 		t.Fatalf("used %d reserved %d, want %d", used, reserved, want)
 	}
 	logs := r.Logs.String()

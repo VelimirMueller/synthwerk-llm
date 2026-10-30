@@ -116,7 +116,7 @@ func TestHTTPDropAfterFirstToken(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
 		w.(http.Flusher).Flush()
-		panic(http.ErrAbortHandler) // drop the connection
+		panic(http.ErrAbortHandler) // the net/http way to drop the connection on purpose
 	})
 	backup := newServer(t, answers("never"))
 	r := newRig(t, nil, httpLink(t, "primary", primary.URL), httpLink(t, "backup", backup.URL))
