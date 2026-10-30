@@ -165,7 +165,7 @@ const WidgetApp = "0199f3a0-0000-7000-8000-00000000a991"
 
 // WidgetToken mints a widget token like identity does (#30): sub, org, client_id =
 // app id, synthwerk:origin, no roles, typ at+jwt. extra overrides claims; a nil value
-// removes one.
+// removes one (authtest.Issuer drops nil claims before it signs).
 func (h *H) WidgetToken(t *testing.T, sub, org, origin string, extra ...map[string]any) string {
 	t.Helper()
 	if h.Widget == nil {

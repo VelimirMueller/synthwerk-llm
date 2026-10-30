@@ -160,7 +160,9 @@ func widgetOrigin(widgetIssuer string, next http.Handler) http.Handler {
 }
 
 // onlyUser refuses every token that is not a user token of the user issuer, and every
-// token with a synthwerk:origin claim (403).
+// token with a synthwerk:origin claim (403). The claim check is on purpose: the claim
+// marks a token as bound to a web origin (#30), and export and AI settings are never
+// for an embedded page, whoever signed the token. Zitadel user tokens have no such claim.
 func onlyUser(userIssuer string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, ok := auth.FromContext(r.Context())
