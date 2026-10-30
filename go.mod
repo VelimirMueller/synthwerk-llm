@@ -5,7 +5,7 @@ go 1.27.0
 toolchain go1.27.3
 
 require (
-	github.com/VelimirMueller/synthwerk-contracts/go v0.5.1-0.20261029230454-5442b8c8e8d9
+	github.com/VelimirMueller/synthwerk-contracts/go v0.6.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/nats-io/nats.go v1.55.0
