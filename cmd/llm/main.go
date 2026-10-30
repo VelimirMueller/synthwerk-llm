@@ -63,6 +63,7 @@ import (
 	"github.com/VelimirMueller/synthwerk-llm/internal/app"
 	"github.com/VelimirMueller/synthwerk-llm/internal/chat"
 	"github.com/VelimirMueller/synthwerk-llm/internal/config"
+	"github.com/VelimirMueller/synthwerk-llm/internal/cors"
 	"github.com/VelimirMueller/synthwerk-llm/internal/erasure"
 	"github.com/VelimirMueller/synthwerk-llm/internal/identity"
 	"github.com/VelimirMueller/synthwerk-llm/internal/provider/registry"
@@ -209,15 +210,18 @@ func run(ctx context.Context) error {
 	}, st, prov, quota.Static{UserTokens: cfg.QuotaUserTokens, OrgTokens: cfg.QuotaOrgTokens}, logger) // entitlements replace Static with #31
 
 	// AI settings (#39): identity checks the membership and gives the plan.
+	// CORS of the widget chat routes (infra#21): identity says which origins apps list.
 	var plans aisettings.Plans
+	corsCfg := cors.Config{Static: cfg.CORSOrigins, Log: logger}
 	if cfg.IdentityURL != "" {
 		ic, err := identity.New(cfg.IdentityURL)
 		if err != nil {
 			return err
 		}
 		plans = ic
+		corsCfg.Lookup = ic
 	} else {
-		logger.WarnContext(ctx, "AI settings routes answer 503: identity is not configured",
+		logger.WarnContext(ctx, "AI settings routes answer 503 and widget CORS uses the static list only: identity is not configured",
 			slog.String("event.name", "llm.settings.not_configured"))
 	}
 	settingsHandler := aisettings.New(chatHandler.Service(), st, plans, source, logger)
@@ -234,6 +238,7 @@ func run(ctx context.Context) error {
 			return nil
 		},
 		Erasure: eraser.Ready,
+		CORS:    cors.New(corsCfg),
 	}, app.Config{Version: version, Commit: commit, Env: logOpts.Env})
 	if err != nil {
 		return err

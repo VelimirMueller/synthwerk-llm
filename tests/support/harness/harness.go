@@ -26,6 +26,7 @@ import (
 	"github.com/VelimirMueller/synthwerk-llm/internal/aisettings"
 	"github.com/VelimirMueller/synthwerk-llm/internal/app"
 	"github.com/VelimirMueller/synthwerk-llm/internal/chat"
+	"github.com/VelimirMueller/synthwerk-llm/internal/cors"
 	"github.com/VelimirMueller/synthwerk-llm/internal/provider"
 	"github.com/VelimirMueller/synthwerk-llm/internal/provider/fake"
 	"github.com/VelimirMueller/synthwerk-llm/internal/quota"
@@ -77,6 +78,9 @@ type Options struct {
 	Plans aisettings.Plans
 	// NoWidget turns the widget issuer off: llm trusts the user issuer only.
 	NoWidget bool
+	// CORS answers CORS for the widget chat routes (infra#21). Nil: every origin
+	// is denied.
+	CORS *cors.Policy
 }
 
 // H is a running gateway.
@@ -129,7 +133,7 @@ func New(t *testing.T, st chat.Store, o Options) *H {
 		db = NopDB{}
 	}
 	ch := chat.New(cfg, st, p, o.Quota, logger)
-	deps := app.Deps{DB: db, Log: logger, Chat: ch, Verifier: v}
+	deps := app.Deps{DB: db, Log: logger, Chat: ch, Verifier: v, CORS: o.CORS}
 	if !o.NoWidget {
 		// Identity signs widget tokens with ES256 and typ at+jwt.
 		h.Widget = authtest.NewIssuer(t)

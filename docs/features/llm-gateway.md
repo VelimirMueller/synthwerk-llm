@@ -1,4 +1,17 @@
-# LLM gateway (chat slice, M2 #32; quotas #33; own data #41; AI settings #39; widget tokens #30)
+---
+title: LLM gateway
+slug: llm-gateway
+status: beta
+epic: E3
+owner: llm
+paths: ["internal/**", "cmd/**", "migrations/**"]
+api: ["POST /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/messages", "OPTIONS /v1/conversations", "OPTIONS /v1/conversations/{id}", "OPTIONS /v1/conversations/{id}/messages", "GET /v1/me/export", "GET /v1/ai-settings", "PUT /v1/ai-settings"]
+events: ["dev.synthwerk.llm.message.completed.v1", "dev.synthwerk.llm.ai_settings.changed.v1"]
+mcp: []
+updated: 2026-10-30
+---
+
+# LLM gateway (chat slice, M2 #32; quotas #33; own data #41; AI settings #39; widget tokens #30; widget CORS infra#21)
 
 > - A signed-in user creates a conversation, sends a message and gets the answer token by token as Server-Sent Events.
 > - The model comes from `SYNTHWERK_LLM_PROVIDER` (`ollama`, `openai_compat`, `fake`). No silent fallback.
@@ -9,11 +22,12 @@
 > - Every finished answer emits `dev.synthwerk.llm.message.completed.v1` on the stream `EVT_LLM` (kit outbox).
 > - Tokens count per user and per org in a UTC day. Over quota: 429 `quota_exhausted` with the scope and the reset, no model call.
 > - A user exports the own rows of every org with `GET /v1/me/export`. When identity emits `dev.synthwerk.identity.user.deleted.v1`, llm deletes them.
+> - llm answers CORS for the three widget chat routes. Allowed: the static list `SYNTHWERK_LLM_CORS_ORIGINS`, or an origin that an app lists in identity (infra#21).
 > - An owner or admin sets the AI settings of the org with `/v1/ai-settings`: model choice, system prompt, input limit, token cap per user, temperature. Every create and send of the org uses them. They stay inside the service aliases and the org's plan (#39).
 
 ## API
 
-Contract: `synthwerk-contracts/openapi/llm/openapi.yaml`. All routes need `Authorization: Bearer <access token>`.
+Contract: `synthwerk-contracts/openapi/llm/openapi.yaml`. All routes need `Authorization: Bearer <access token>`, except the CORS preflight (`OPTIONS`) of the widget chat routes.
 
 | Method | Path | Result |
 |---|---|---|
@@ -41,6 +55,21 @@ After the first byte the status stays 200; a failure is an `error` event. A clie
 - llm trusts them only with `SYNTHWERK_LLM_WIDGET_ISSUER`. Unset: widget tokens get 401.
 - Routes: `POST /v1/conversations`, `GET /v1/conversations/{id}`, `POST /v1/conversations/{id}/messages`. `GET /v1/me/export` and `/v1/ai-settings` answer 403 to every token of the widget issuer and to every token with `synthwerk:origin`.
 - Owner = token org and `sub`, as for a user token: the AI settings and the org quota of the token org apply; the user quota key is the `sub`. A user token of the same `sub` and org shares the conversations and the quota row.
+
+## CORS of the widget chat routes (infra#21)
+
+- The widget runs on customer sites. The edge does not answer CORS for `POST /v1/conversations`, `GET /v1/conversations/{id}` and `POST /v1/conversations/{id}/messages`. llm answers it.
+- Allowed origin: in `SYNTHWERK_LLM_CORS_ORIGINS` (first-party apps), or identity answers 204 on `GET /internal/v1/widget-origins?origin=<origin>`. Everything else is denied.
+- Only an origin that passes the strict parser of identity (`internal/cors/origin.go`) is looked up. `null`, a path, a wildcard or `http` on a public host is denied without a call.
+- Identity answers are cached per canonical origin: yes and no for 60 s, at most 4096 entries. One call per origin at a time.
+- An identity error or a timeout (2 s) denies the origin. The error is not cached.
+- `IDENTITY_URL` unset: the static list only.
+- `OPTIONS`: no token. One `Origin` and `Access-Control-Request-Method` equal to the route method → 204 with `Access-Control-Allow-Origin`, `-Methods`, `-Headers: Authorization, Content-Type`, `-Max-Age: 600`. Else 403 without CORS headers.
+- Actual requests: `Vary: Origin` always. An allowed origin gets `Access-Control-Allow-Origin` and `Access-Control-Expose-Headers: Retry-After`, also on a 401 or a 429.
+- No `Access-Control-Allow-Credentials`: the widget sends a Bearer token, never a cookie.
+- CORS only lets the browser read the answer. The token check and the `synthwerk:origin` binding stay the authorisation.
+- The SSE answer streams as before: the CORS wrapper sets headers only and does not wrap the writer.
+- Export and AI settings get no CORS from llm. The edge answers for them.
 
 ## Stream
 
@@ -146,7 +175,7 @@ Produced: `dev.synthwerk.llm.message.completed.v1` on `evt.llm.message.completed
 
 ## Config
 
-`SYNTHWERK_LLM_*` (see `cmd/llm/main.go` and `internal/config`): `PROVIDER`, `BASE_URL`, `API_KEY[_FILE]`, `MODEL_ALIASES` (`default=qwen3.5:4b`; the alias `default` must exist), `SYSTEM_PROMPT`, `MAX_INPUT_CHARS` (8000), `MAX_STREAMS_PER_OWNER` (2), `MAX_CONTEXT_CHARS` (24000), `STREAM_TIMEOUT` (120s), `PROVIDER_CONCURRENCY` (1), `QUEUE_TIMEOUT` (10s), `FAKE_DELAY` (0s), `QUOTA_USER_TOKENS` (50000 per UTC day, 0 = no limit), `QUOTA_ORG_TOKENS` (500000, 0 = no limit), `QUOTA_RESERVE_TOKENS` (1024; a non-zero limit must be above it), `OIDC_ISSUER`, `OIDC_AUDIENCE`, `JWKS_URL`, `WIDGET_ISSUER` (iss of identity widget tokens; empty = refused), `WIDGET_AUDIENCE` (`synthwerk-api`), `WIDGET_JWKS_URL` (default `<WIDGET_ISSUER>/.well-known/jwks.json`; set the internal URL in compose), `IDENTITY_URL` (identity base URL for the AI settings; empty = `/v1/ai-settings` answers 503), `DATABASE_URL`, `NATS_URL`, `HTTP_ADDR`.
+`SYNTHWERK_LLM_*` (see `cmd/llm/main.go` and `internal/config`): `PROVIDER`, `BASE_URL`, `API_KEY[_FILE]`, `MODEL_ALIASES` (`default=qwen3.5:4b`; the alias `default` must exist), `SYSTEM_PROMPT`, `MAX_INPUT_CHARS` (8000), `MAX_STREAMS_PER_OWNER` (2), `MAX_CONTEXT_CHARS` (24000), `STREAM_TIMEOUT` (120s), `PROVIDER_CONCURRENCY` (1), `QUEUE_TIMEOUT` (10s), `FAKE_DELAY` (0s), `QUOTA_USER_TOKENS` (50000 per UTC day, 0 = no limit), `QUOTA_ORG_TOKENS` (500000, 0 = no limit), `QUOTA_RESERVE_TOKENS` (1024; a non-zero limit must be above it), `OIDC_ISSUER`, `OIDC_AUDIENCE`, `JWKS_URL`, `WIDGET_ISSUER` (iss of identity widget tokens; empty = refused), `WIDGET_AUDIENCE` (`synthwerk-api`), `WIDGET_JWKS_URL` (default `<WIDGET_ISSUER>/.well-known/jwks.json`; set the internal URL in compose), `IDENTITY_URL` (identity base URL for the AI settings and the widget origin lookup; empty = `/v1/ai-settings` answers 503 and widget CORS uses the static list only), `CORS_ORIGINS` (comma list of first-party origins for the widget chat routes, for example `http://localhost:3000`; empty by default; an invalid item stops the start), `DATABASE_URL`, `NATS_URL`, `HTTP_ADDR`.
 
 ## Tests
 
@@ -163,6 +192,10 @@ Produced: `dev.synthwerk.llm.message.completed.v1` on `evt.llm.message.completed
 - `tests/unit/identity` — `MyEntitlements - identity answers 200 - org id and per-user limit, caller token forwarded`; 401/403/404 → `ErrDenied`; 500, redirect, bad body, unreachable → `ErrUnavailable`.
 - `tests/integration/chat/settings_test.go` — `Send - org input limit changed to 10 - an 11-character message gets 413, a 10-character one streams`; `Send - org system prompt and temperature - the model call carries both`; `Create and Send - a model the org no longer allows - 400`; `Send - org cap per user below the plan - 429 quota_exhausted with scope user and the cap as limit`; `UpdateAiSettings - a change - row and event in one transaction; RLS hides the row from another org`.
 - `tests/integration/erasure` — `EraseUser` also deletes the AI settings of the closed org only.
+- `tests/unit/cors` — `Allowed - invalid origin "null" - no, no lookup, nothing cached`; `Allowed - yes and no answers - cached for the TTL, asked again after it`; `Allowed - identity fails - no, the error is not cached`; `Allowed - 3000 different valid origins, bound 100 - cache never above 100`; `Allowed - 50 parallel requests for one new origin - one lookup`; `Preflight - other method requested - 403 without CORS headers, Vary, no-store`.
+- `tests/unit/chat/cors_test.go` — `Preflight POST /v1/conversations - customer origin listed in identity, no token - 204`; `Create - no token, listed origin - 401 the widget can read`; `Send - widget token, listed origin - SSE with CORS headers, pieces arrive one by one`; `Preflight /v1/me/export - not a widget route - no CORS from llm`.
+- `tests/unit/identity/widgetorigins_test.go` — `WidgetOriginListed - identity answers 204 - yes; path, escaped origin, no token`; 404 → no; other status, unreachable → `ErrUnavailable`.
+- `tests/integration/chat/cors_test.go` — `Preflight, Create, Send - listed customer origin - 204, 201, SSE, all with the origin allowed`.
 - `tests/contract/provider` — conformance of `fake` and `openaicompat`.
 - `tests/unit/config`, `tests/unit/sse`, `tests/unit/quota` (UTC window, `Retry-After` range, error matching).
 
@@ -177,3 +210,4 @@ Entitlement-based limits (#31, the `quota.Source` seam is ready), a `GET` of the
 | 2026-10-30 | `GET /v1/me/export` and the `user.deleted.v1` consumer (synthwerk#41). Migration `0004_own_data.sql`. `/readyz` check `erasure` (degraded only). Contracts `go` at the #41 commit; bump to `v0.6.0` once tagged. |
 | 2026-10-30 | Widget tokens of synthwerk-identity on the chat routes (synthwerk#30): `SYNTHWERK_LLM_WIDGET_ISSUER`, `_AUDIENCE`, `_JWKS_URL`; `/readyz` check `jwks_widget`. Contracts `go` `v0.8.0` (kit `MultiVerifier`). |
 | 2026-10-30 | AI settings per org: `GET`/`PUT /v1/ai-settings`, `ai_settings.changed.v1`, migration `0005_ai_settings.sql`, `SYNTHWERK_LLM_IDENTITY_URL` (synthwerk#39). Contracts `go` at the #39 commit (contracts PR #26). |
+| 2026-10-30 | CORS of the widget chat routes in llm (infra#21): `SYNTHWERK_LLM_CORS_ORIGINS`, identity lookup `GET /internal/v1/widget-origins`, `OPTIONS` without token. Frontmatter for the feature-doc check. |

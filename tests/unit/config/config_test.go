@@ -135,3 +135,21 @@ func TestLoadWidgetIssuer(t *testing.T) {
 		t.Fatalf("set: %q %v, err %v", c.WidgetJWKSURL, c.WidgetAudiences, err)
 	}
 }
+
+// Load - CORS origins of the widget chat routes (infra#21): empty by default,
+// canonical form, an invalid item refuses the start.
+func TestLoadCORSOrigins(t *testing.T) {
+	c, err := config.Load(envOf(nil))
+	if err != nil || len(c.CORSOrigins) != 0 {
+		t.Fatalf("default: %v %v", c.CORSOrigins, err)
+	}
+	c, err = config.Load(envOf(map[string]string{"SYNTHWERK_LLM_CORS_ORIGINS": "http://localhost:3000, HTTPS://Studio.Example:443"}))
+	if err != nil || len(c.CORSOrigins) != 2 || c.CORSOrigins[0] != "http://localhost:3000" || c.CORSOrigins[1] != "https://studio.example" {
+		t.Fatalf("list: %v %v", c.CORSOrigins, err)
+	}
+	for _, bad := range []string{"*", "https://studio.example/", "http://studio.example", "null"} {
+		if _, err := config.Load(envOf(map[string]string{"SYNTHWERK_LLM_CORS_ORIGINS": bad})); err == nil || !strings.Contains(err.Error(), "SYNTHWERK_LLM_CORS_ORIGINS") {
+			t.Fatalf("%q accepted: %v", bad, err)
+		}
+	}
+}
