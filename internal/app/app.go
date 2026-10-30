@@ -25,6 +25,7 @@ import (
 
 	"github.com/VelimirMueller/synthwerk-llm/internal/aisettings"
 	"github.com/VelimirMueller/synthwerk-llm/internal/chat"
+	"github.com/VelimirMueller/synthwerk-llm/internal/cors"
 	"github.com/VelimirMueller/synthwerk-llm/internal/problem"
 )
 
@@ -61,6 +62,9 @@ type Deps struct {
 	NATS func(ctx context.Context) error
 	// Erasure reports the user.deleted consumer for /readyz (not critical). Nil: no check.
 	Erasure func(ctx context.Context) error
+	// CORS answers CORS for the widget chat routes (infra#21). Nil: every origin
+	// is denied (Vary: Origin, preflight 403).
+	CORS *cors.Policy
 }
 
 // App holds the dependencies of the service.
@@ -105,7 +109,11 @@ func New(d Deps, cfg Config) (*App, error) {
 			return nil, err
 		}
 		if d.Chat != nil {
-			d.Chat.Register(mux, chatAuthn, userAuthn)
+			policy := d.CORS
+			if policy == nil {
+				policy = cors.New(cors.Config{})
+			}
+			d.Chat.Register(mux, chatAuthn, userAuthn, policy)
 		}
 		if d.Settings != nil {
 			d.Settings.Register(mux, userAuthn)

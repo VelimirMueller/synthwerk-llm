@@ -19,13 +19,33 @@ import (
 // maxBody bounds a JSON request body: 8000 characters, each escaped as \uXXXX at worst.
 const maxBody = 64 << 10
 
+// CORS answers CORS for the widget chat routes (infra#21). *cors.Policy implements it.
+type CORS interface {
+	// Wrap sets the CORS headers of an actual request.
+	Wrap(next http.Handler) http.Handler
+	// Preflight answers OPTIONS for a route with method.
+	Preflight(method string) http.Handler
+}
+
 // Register adds the chat routes to mux. Both checks wrap auth.Middleware.
 // chatAuthn guards the routes the widget uses: user and widget tokens (#30).
 // userAuthn guards the export: user tokens only.
-func (h *Handler) Register(mux *http.ServeMux, chatAuthn, userAuthn func(http.Handler) http.Handler) {
-	mux.Handle("POST /v1/conversations", chatAuthn(http.HandlerFunc(h.create)))
-	mux.Handle("GET /v1/conversations/{id}", chatAuthn(http.HandlerFunc(h.get)))
-	mux.Handle("POST /v1/conversations/{id}/messages", chatAuthn(http.HandlerFunc(h.send)))
+// c answers CORS on the widget routes only. It sits outside the token check, so
+// the preflight needs no token and a 401 is readable by the widget. The export
+// gets no CORS here: the edge answers for it.
+func (h *Handler) Register(mux *http.ServeMux, chatAuthn, userAuthn func(http.Handler) http.Handler, c CORS) {
+	widget := []struct {
+		method, path string
+		fn           http.HandlerFunc
+	}{
+		{http.MethodPost, "/v1/conversations", h.create},
+		{http.MethodGet, "/v1/conversations/{id}", h.get},
+		{http.MethodPost, "/v1/conversations/{id}/messages", h.send},
+	}
+	for _, rt := range widget {
+		mux.Handle(rt.method+" "+rt.path, c.Wrap(chatAuthn(rt.fn)))
+		mux.Handle(http.MethodOptions+" "+rt.path, c.Preflight(rt.method))
+	}
 	mux.Handle("GET /v1/me/export", userAuthn(http.HandlerFunc(h.exportMe)))
 }
 

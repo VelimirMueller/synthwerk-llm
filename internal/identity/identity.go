@@ -1,4 +1,7 @@
-// Package identity asks synthwerk-identity about the caller's org (synthwerk#39):
+// Package identity asks synthwerk-identity about the caller's org (synthwerk#39)
+// and about the widget origins for CORS (infra#21).
+//
+// Org (synthwerk#39):
 // GET /v1/me/entitlements with the caller's own token. One call answers two
 // questions for the AI settings: the stored membership is active (identity answers
 // 404 otherwise), and the plan's per-user token limit (entitlements, #31). It also
@@ -87,4 +90,32 @@ func (c *Client) MyEntitlements(ctx context.Context, bearer string) (Plan, error
 		return Plan{}, fmt.Errorf("%w: body", ErrUnavailable)
 	}
 	return Plan{OrgID: e.OrgId.String(), UserTokensPerDay: e.Limits.LlmTokensPerUserPerDay}, nil
+}
+
+// widgetOriginsPath is the internal identity route that answers whether an app of
+// an active org lists an origin (infra#21).
+const widgetOriginsPath = "/internal/v1/widget-origins"
+
+// WidgetOriginListed asks identity whether an app of an active org lists origin (a
+// canonical origin). 204 is yes, 404 is no, anything else is ErrUnavailable. The
+// call sends no token.
+func (c *Client) WidgetOriginListed(ctx context.Context, origin string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+widgetOriginsPath+"?origin="+url.QueryEscape(origin), nil)
+	if err != nil {
+		return false, fmt.Errorf("%w: request", ErrUnavailable)
+	}
+	res, err := c.http.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("%w: no answer", ErrUnavailable)
+	}
+	defer func() { _ = res.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, maxBody))
+	switch res.StatusCode {
+	case http.StatusNoContent:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
+	default:
+		return false, fmt.Errorf("%w: status %d", ErrUnavailable, res.StatusCode)
+	}
 }

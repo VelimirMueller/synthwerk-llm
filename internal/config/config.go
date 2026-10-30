@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/VelimirMueller/synthwerk-contracts/go/kit/env"
+
+	"github.com/VelimirMueller/synthwerk-llm/internal/cors"
 )
 
 // Service is the short service name (env prefix SYNTHWERK_LLM_).
@@ -107,6 +109,10 @@ type Config struct {
 	// IdentityURL is the identity base URL as llm reaches it (#39). The AI settings
 	// routes ask identity for the membership and the plan. Empty: they answer 503.
 	IdentityURL string
+	// CORSOrigins are the canonical origins of first-party apps that may call the
+	// widget chat routes from a browser (infra#21). Identity answers for the
+	// customer origins. Empty: identity only.
+	CORSOrigins []string
 }
 
 // Load reads the config. getenv is os.Getenv in production.
@@ -235,6 +241,9 @@ func Load(getenv func(string) string) (Config, error) {
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			errs = append(errs, fmt.Errorf("%s must be an absolute http(s) URL without user info, query or fragment", env.Key(Service, "IDENTITY_URL")))
 		}
+	}
+	if c.CORSOrigins, err = cors.ParseOrigins(get("CORS_ORIGINS", "")); err != nil {
+		errs = append(errs, fmt.Errorf("%s: %w", env.Key(Service, "CORS_ORIGINS"), err))
 	}
 	c.NATSURL = get("NATS_URL", "")
 	if c.NATSURL == "" {

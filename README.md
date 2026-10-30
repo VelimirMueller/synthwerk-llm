@@ -97,6 +97,8 @@ The service reads its configuration from the environment:
 | `SYNTHWERK_LLM_DATABASE_URL` | — | Postgres URL (required) |
 | `SYNTHWERK_LLM_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `SYNTHWERK_LLM_LOG_FORMAT` | `json` | `json` or `console` (local only) |
+| `SYNTHWERK_LLM_IDENTITY_URL` | — | Identity base URL as llm reaches it (AI settings, widget origin lookup). Unset = AI settings answer 503, widget CORS uses the static list only |
+| `SYNTHWERK_LLM_CORS_ORIGINS` | — | Comma list of first-party origins for the widget chat routes, for example `http://localhost:3000`. Customer origins come from identity |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP gRPC collector. Unset = no export |
 
 Start it against a running Postgres:
