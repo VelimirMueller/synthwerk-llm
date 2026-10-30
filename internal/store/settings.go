@@ -47,9 +47,10 @@ func (s *Store) OrgSettings(ctx context.Context, o Owner) (*settings.Settings, e
 	return out, nil
 }
 
-// SettingsChange builds the change from the stored settings (nil: none). It returns
-// nil when nothing changes: then nothing is written and no event goes out.
-type SettingsChange func(prev *settings.Settings) (*cloudevents.Event, error)
+// SettingsChange builds the change from the stored settings (nil: none) and the
+// version the row gets when it is written. It returns a nil event when nothing
+// changes: then nothing is written and no event goes out.
+type SettingsChange func(prev *settings.Settings, version int64) (*cloudevents.Event, error)
 
 // SaveOrgSettings replaces the AI settings of the owner's org when the stored version
 // is expect (0: none stored). build sees the stored settings under a row lock and
@@ -75,7 +76,7 @@ func (s *Store) SaveOrgSettings(ctx context.Context, o Owner, next settings.Sett
 		if version != expect {
 			return ErrVersionConflict
 		}
-		ev, err := build(prev)
+		ev, err := build(prev, version+1)
 		if err != nil {
 			return err
 		}
@@ -89,8 +90,8 @@ func (s *Store) SaveOrgSettings(ctx context.Context, o Owner, next settings.Sett
 		if prev == nil {
 			// Two first saves at once: the second insert finds the row and writes nothing.
 			row, err = scanSettings(tx.QueryRow(ctx,
-				`INSERT INTO llm.org_settings (tenant_id, model_alias, allowed_models, system_prompt, max_input_chars, user_tokens_per_day, temperature, version)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, 1)
+				`INSERT INTO llm.org_settings (tenant_id, model_alias, allowed_models, system_prompt, max_input_chars, user_tokens_per_day, temperature, version, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, 1, now())
 				 ON CONFLICT (tenant_id) DO NOTHING
 				 RETURNING `+settingsColumns,
 				o.Tenant, next.Model, next.AllowedModels, next.SystemPrompt, next.MaxInputChars, next.UserTokensPerDay, next.Temperature))
@@ -107,6 +108,9 @@ func (s *Store) SaveOrgSettings(ctx context.Context, o Owner, next settings.Sett
 		}
 		if err != nil {
 			return err
+		}
+		if row.Version != version+1 {
+			return fmt.Errorf("stored version %d, event version %d", row.Version, version+1)
 		}
 		if err := outbox.Enqueue(ctx, tx, *ev); err != nil {
 			return err

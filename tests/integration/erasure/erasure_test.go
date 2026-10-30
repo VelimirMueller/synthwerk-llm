@@ -250,7 +250,7 @@ func TestEraseUserRemovesOwnRowsInAllOrgs(t *testing.T) {
 	for _, org := range []string{"org-1", "org-2"} {
 		next := settings.Settings{Model: "default", AllowedModels: []string{"default"}, MaxInputChars: 100}
 		if _, _, err := r.st.SaveOrgSettings(t.Context(), store.Owner{Tenant: org, User: "user-a"}, next, 0,
-			func(*settings.Settings) (*cloudevents.Event, error) {
+			func(*settings.Settings, int64) (*cloudevents.Event, error) {
 				ev, err := cloudevents.New(t.Context(), "dev.synthwerk.llm.ai_settings.changed.v1", "/synthwerk/llm/local", map[string]any{})
 				return &ev, err
 			}); err != nil {

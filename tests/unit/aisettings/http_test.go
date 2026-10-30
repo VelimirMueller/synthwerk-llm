@@ -92,7 +92,7 @@ func (m *memStore) SaveOrgSettings(_ context.Context, _ store.Owner, next settin
 	if v != expect {
 		return settings.Settings{}, false, store.ErrVersionConflict
 	}
-	ev, err := build(m.row)
+	ev, err := build(m.row, v+1)
 	if err != nil {
 		return settings.Settings{}, false, err
 	}

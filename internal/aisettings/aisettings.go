@@ -187,14 +187,14 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	var changed []string
-	saved, didChange, err := h.store.SaveOrgSettings(ctx, o, next, expect, func(prev *settings.Settings) (*cloudevents.Event, error) {
+	saved, didChange, err := h.store.SaveOrgSettings(ctx, o, next, expect, func(prev *settings.Settings, version int64) (*cloudevents.Event, error) {
 		// Compare with what the org had in effect: the defaults when nothing is stored.
 		changed = settings.Changed(h.svc.Normalize(prev), next)
 		if len(changed) == 0 {
 			return nil, nil
 		}
 		data := event{
-			OrgID: pl.OrgID, Version: expect + 1, Changed: changed,
+			OrgID: pl.OrgID, Version: version, Changed: changed,
 			Model: next.Model, AllowedModels: next.AllowedModels, MaxInputChars: next.MaxInputChars,
 			UserTokensPerDay: next.UserTokensPerDay, SystemPromptChars: len([]rune(next.SystemPrompt)),
 			Temperature: next.Temperature,
