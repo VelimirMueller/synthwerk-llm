@@ -24,8 +24,14 @@ type Provider struct {
 	Reply func(req provider.Request) []string
 	// Delay before each piece.
 	Delay time.Duration
-	// FailChat makes Chat fail with this error (wrapped in ErrUnavailable).
+	// FailChat makes Chat fail: with a *provider.StatusError when Status is set,
+	// else with provider.ErrUnavailable.
 	FailChat bool
+	// Status is the HTTP status FailChat reports, for example 503 or 429. 0: none.
+	Status int
+	// FailStream makes the first Next fail with provider.ErrStream (a broken stream
+	// before the first piece).
+	FailStream bool
 	// FailAfter makes Next fail after this many pieces. 0: never.
 	FailAfter int
 	// NoUsage: the stream reports estimated usage, like a provider without numbers.
@@ -59,6 +65,9 @@ func (p *Provider) Chat(ctx context.Context, req provider.Request) (provider.Str
 	p.reqs = append(p.reqs, req)
 	p.mu.Unlock()
 	if p.FailChat {
+		if p.Status != 0 {
+			return nil, &provider.StatusError{Code: p.Status}
+		}
 		return nil, provider.ErrUnavailable
 	}
 	if err := ctx.Err(); err != nil {
@@ -102,6 +111,9 @@ type stream struct {
 func (s *stream) Next() (string, error) {
 	if s.next >= len(s.pieces) {
 		return "", io.EOF
+	}
+	if s.p.FailStream && s.next == 0 {
+		return "", provider.ErrStream
 	}
 	if s.p.FailAfter > 0 && s.next >= s.p.FailAfter {
 		return "", provider.ErrUnavailable

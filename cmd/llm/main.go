@@ -16,6 +16,10 @@
 //	SYNTHWERK_LLM_BASE_URL         OpenAI-compatible base URL, default http://ollama:11434/v1 for ollama
 //	SYNTHWERK_LLM_API_KEY[_FILE]   provider key (secret, optional)
 //	SYNTHWERK_LLM_MODEL_ALIASES    alias=model list, default "default=qwen3.5:4b"
+//	SYNTHWERK_LLM_REGION           eu or non_eu; default eu for ollama and fake, required for openai_compat
+//	SYNTHWERK_LLM_FALLBACKS        fallback provider names in order (#56); empty = no fallback
+//	SYNTHWERK_LLM_FALLBACK_<NAME>_PROVIDER|BASE_URL|API_KEY[_FILE]|REGION|MODEL_ALIASES  one fallback
+//	SYNTHWERK_LLM_ALLOW_NON_EU     true lets a non_eu provider in; default false (data stays in the EU)
 //	SYNTHWERK_LLM_OIDC_ISSUER      token issuer (required)
 //	SYNTHWERK_LLM_OIDC_AUDIENCE    accepted audiences, comma list (required)
 //	SYNTHWERK_LLM_JWKS_URL         key set URL; empty = OIDC discovery on the issuer
@@ -186,7 +190,7 @@ func run(ctx context.Context) error {
 		logger.WarnContext(ctx, "widget tokens are refused: no widget issuer",
 			slog.String("event.name", "llm.widget.off"))
 	}
-	prov, err := registry.New(cfg)
+	prov, err := registry.Chain(cfg, logger)
 	if err != nil {
 		return err
 	}
@@ -271,7 +275,8 @@ func run(ctx context.Context) error {
 	logger.InfoContext(ctx, "service started",
 		slog.String("event.name", "service.started"),
 		slog.String("server.address", srv.Addr),
-		slog.String("gen_ai.provider.name", prov.Name()))
+		slog.String("gen_ai.provider.name", prov.Name()),
+		slog.Int("synthwerk.provider.fallbacks", len(cfg.Fallbacks)))
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return relay.Run(gctx) })

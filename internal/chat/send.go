@@ -48,6 +48,9 @@ type answer struct {
 	pieces int
 	// called: the provider took the request (input tokens are spent).
 	called bool
+	// provider answered (#56): the fallback chain names the link that took the
+	// request. Empty: the handler's provider.
+	provider string
 }
 
 func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
@@ -154,13 +157,14 @@ func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 		inputEstimate = provider.EstimateInput(msgs)
 	}
 
-	ans := h.stream(w, r, turn, provider.Request{Model: model, Messages: msgs, Options: provider.Options{Temperature: ap.Temperature}}, alias)
+	ans := h.stream(w, r, turn, provider.Request{Model: model, Alias: alias, Messages: msgs, Options: provider.Options{Temperature: ap.Temperature}}, alias)
 	h.finish(r.Context(), p, o, convID, turn.AssistantMessageID, alias, start, ans, inputEstimate)
 }
 
-// charge is what an answer costs the quota. A completed answer costs the provider's
-// counts. An answer that ended early costs the input estimate and the partial
-// answer, once the provider took the request. Refused or never called: nothing.
+// charge is what an answer costs the quota. A completed answer costs the counts of
+// the provider that answered (after a fall-over: the fallback's, #56). An answer
+// that ended early costs the input estimate and the partial answer, once a provider
+// took the request. Refused or never called: nothing.
 func charge(ans answer, inputEstimate int) int64 {
 	switch {
 	case ans.status == store.StatusCompleted:
@@ -174,8 +178,8 @@ func charge(ans answer, inputEstimate int) int64 {
 
 // stream runs the model call and writes the SSE answer. It never returns an error:
 // the outcome is in the answer status.
-func (h *Handler) stream(w http.ResponseWriter, r *http.Request, turn store.Turn, req provider.Request, alias string) answer {
-	ans := answer{status: store.StatusFailed}
+func (h *Handler) stream(w http.ResponseWriter, r *http.Request, turn store.Turn, req provider.Request, alias string) (ans answer) {
+	ans = answer{status: store.StatusFailed}
 	releaseModel, ok := h.acquireModel(r.Context())
 	if !ok {
 		if r.Context().Err() != nil {
@@ -201,6 +205,12 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, turn store.Turn
 	}
 	ans.called = true
 	defer func() { _ = st.Close() }()
+	// Runs after the reader stopped (deferred below, so it runs first) and before
+	// st.Close: the chain may have fallen over before the first piece, so ask at the
+	// end who answered. A plain provider stream reports (h.provider.Name(), true).
+	defer func() {
+		ans.provider, ans.called = provider.AnsweredBy(st, h.provider.Name())
+	}()
 
 	sw, err := sse.Start(w, turn.AssistantMessageID)
 	if err != nil {
@@ -303,6 +313,10 @@ func (h *Handler) finish(rctx context.Context, p *auth.Principal, o store.Owner,
 	defer cancel()
 
 	usage := ans.result.Usage
+	prov := ans.provider
+	if prov == "" {
+		prov = h.provider.Name()
+	}
 	if ans.status != store.StatusCompleted {
 		usage = provider.Usage{OutputTokens: provider.EstimateTokens(string(ans.text)), Estimated: true}
 	}
@@ -310,7 +324,7 @@ func (h *Handler) finish(rctx context.Context, p *auth.Principal, o store.Owner,
 		ConversationID: convID,
 		MessageID:      msgID,
 		Model:          alias,
-		Provider:       h.provider.Name(),
+		Provider:       prov,
 		InputTokens:    usage.InputTokens,
 		OutputTokens:   usage.OutputTokens,
 		LatencyMS:      time.Since(start).Milliseconds(),
@@ -337,7 +351,8 @@ func (h *Handler) finish(rctx context.Context, p *auth.Principal, o store.Owner,
 		slog.String("synthwerk.message_id", msgID),
 		slog.String("synthwerk.status", ans.status),
 		slog.String("gen_ai.request.model", alias),
-		slog.String("gen_ai.provider.name", h.provider.Name()),
+		slog.String("gen_ai.provider.name", prov),
+		slog.Bool("synthwerk.provider.fallback", prov != h.provider.Name()),
 		slog.Int("gen_ai.usage.input_tokens", usage.InputTokens),
 		slog.Int("gen_ai.usage.output_tokens", usage.OutputTokens),
 		slog.Int64("synthwerk.latency_ms", data.LatencyMS),

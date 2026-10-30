@@ -6,13 +6,16 @@
 // Rules for an adapter:
 //   - Errors never carry the provider's response body or the prompt text.
 //   - Chat returns ErrUnavailable (wrapped) when the model cannot answer before the
-//     first piece. Errors from Next after the first piece end the answer as failed.
+//     first piece: ErrConnect when the provider is not reachable, a *StatusError for
+//     a bad HTTP status. Errors from Next after the first piece end the answer as
+//     failed. A stream the adapter cannot read is ErrStream (wrapped).
 //   - The context of Chat bounds the whole stream: cancel it to stop the model.
 package provider
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"unicode/utf8"
 )
 
@@ -36,6 +39,10 @@ type Message struct {
 type Request struct {
 	// Model is the provider model name, for example qwen3.5:4b. Never an alias.
 	Model string
+	// Alias is the model alias the gateway resolved Model from. Adapters ignore it;
+	// the fallback chain (internal/provider/chain, #56) picks each provider's model
+	// by it. Empty: Model goes to the first provider only.
+	Alias string
 	// Messages, oldest first. The system prompt, if any, is the first one.
 	Messages []Message
 	// Options tune the sampling. The zero value sends nothing: the model defaults apply.
@@ -97,6 +104,40 @@ type Provider interface {
 
 // ErrUnavailable means the model cannot answer now (down, busy, bad status).
 var ErrUnavailable = errors.New("provider: unavailable")
+
+// ErrConnect means the provider was not reachable: no connection, no response
+// headers. It matches ErrUnavailable.
+var ErrConnect = fmt.Errorf("%w: request failed", ErrUnavailable)
+
+// ErrStream means the provider sent a stream the adapter cannot read.
+var ErrStream = errors.New("provider: bad stream")
+
+// StatusError is a bad HTTP status of the provider. It matches ErrUnavailable. It
+// never holds the response body.
+type StatusError struct {
+	Code int
+}
+
+func (e *StatusError) Error() string { return fmt.Sprintf("%s: status %d", ErrUnavailable, e.Code) }
+
+// Is makes errors.Is(err, ErrUnavailable) true.
+func (*StatusError) Is(target error) bool { return target == ErrUnavailable }
+
+// Answered is implemented by a stream that knows which provider answered (the
+// fallback chain). name is the provider's name; taken is false when no provider
+// took the request.
+type Answered interface {
+	Answered() (name string, taken bool)
+}
+
+// AnsweredBy returns the provider that answered st: Answered when st implements
+// it, else def (taken true).
+func AnsweredBy(st Stream, def string) (name string, taken bool) {
+	if a, ok := st.(Answered); ok {
+		return a.Answered()
+	}
+	return def, true
+}
 
 // EstimateTokens is a rough token count for providers that send no usage:
 // about four characters per token, at least one for non-empty text.

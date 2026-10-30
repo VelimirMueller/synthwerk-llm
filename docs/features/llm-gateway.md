@@ -11,10 +11,10 @@ mcp: []
 updated: 2026-10-30
 ---
 
-# LLM gateway (chat slice, M2 #32; quotas #33; own data #41; AI settings #39; widget tokens #30; widget CORS infra#21)
+# LLM gateway (chat slice, M2 #32; quotas #33; own data #41; AI settings #39; widget tokens #30; widget CORS infra#21; fallback provider #56)
 
 > - A signed-in user creates a conversation, sends a message and gets the answer token by token as Server-Sent Events.
-> - The model comes from `SYNTHWERK_LLM_PROVIDER` (`ollama`, `openai_compat`, `fake`). No silent fallback.
+> - The model comes from `SYNTHWERK_LLM_PROVIDER` (`ollama`, `openai_compat`, `fake`). An operator can add fallback providers per alias (`SYNTHWERK_LLM_FALLBACKS`, #56). The gateway falls over only before the first token, and never to a non-EU provider without `SYNTHWERK_LLM_ALLOW_NON_EU=true`.
 > - A request without a valid user token gets 401 before any database or model call.
 > - Two token issuers: Zitadel (user tokens) and synthwerk-identity (widget tokens, #30). A widget token works only on create, read and send, only from its `synthwerk:origin`. Export and AI settings refuse it (403).
 > - A conversation belongs to one user in one org. Postgres row level security enforces it.
@@ -151,7 +151,21 @@ Contract `llm.getAiSettings`, `llm.updateAiSettings` (spec 0.4.0). Code: `intern
 
 `Request.Options` (temperature, seed, max tokens, thinking off) is empty for the chat handler, so the model defaults apply. The eval (`evals/README.md`) pins them.
 
-Adapter errors never hold the provider's body or the prompt. `tests/contract/provider` runs the same conformance checks on every adapter.
+Adapter errors never hold the provider's body or the prompt. `tests/contract/provider` runs the same conformance checks on every adapter. Adapter errors are typed: `ErrConnect` (not reachable), `*StatusError` (bad HTTP status), `ErrStream` (unreadable stream); all match `ErrUnavailable`.
+
+### Fallback chain (#56)
+
+`internal/provider/chain` wraps the providers. `registry.Chain` builds it from the config: the primary (`PROVIDER`), then each name of `FALLBACKS` in order. The chain of one alias is every provider that maps the alias. Without fallbacks the chain is the primary alone, and nothing changes.
+
+- **Falls over** only before the first token, on: connection error (`connect`), status 5xx (`status_5xx`), status 429 (`status_429`), a broken stream (`stream`), no first token within `FIRST_TOKEN_TIMEOUT` (`first_token_timeout`), an open circuit (`circuit_open`).
+- **Never falls over** after the first token (the client never gets a mixed or repeated answer), on another 4xx, on a client abort or on the stream timeout.
+- `FIRST_TOKEN_TIMEOUT` applies only to a provider that has a next one. The last provider keeps the old behaviour.
+- **Circuit breaker per provider:** `BREAKER_FAILURES` failures in a row open the circuit for `BREAKER_OPEN`. Then one request is the probe (half-open): a first token closes the circuit, a failure opens it again. The last provider of a chain is always tried.
+- **Same alias, same allow-list:** the org check (#39) runs before the chain. A fallback serves only aliases of `MODEL_ALIASES` that its own `MODEL_ALIASES` maps, with its own model name. It never adds a model.
+- **Data residency:** each provider has a region, `eu` or `non_eu`. Rule of synthwerk `docs/infrastructure.md`: all data stays in the EU. A `non_eu` provider stops the start unless `ALLOW_NON_EU=true` is set in that environment. Default `false`.
+- **Quota and events:** the answer, its usage, the quota charge and `provider` in the completed event are those of the provider that answered. When every provider failed before a token, nothing is charged.
+- **Logs:** `llm.provider.fallback` (WARN: provider, next, alias, reason); `llm.provider.circuit.open` (WARN), `.half_open`, `.closed`; `llm.message.finished` names the answering provider and `synthwerk.provider.fallback`.
+- **Metrics** (OTel, scope `internal/provider/chain`): `synthwerk.llm.provider.fallbacks` (provider, next, alias, reason), `synthwerk.llm.provider.failures` (provider, alias, reason), `synthwerk.llm.provider.circuit.transitions` (provider, state). Pulse alerts on them later (synthwerk#57).
 
 ## Data
 
@@ -171,11 +185,13 @@ Consumed: `dev.synthwerk.identity.user.deleted.v1` on `evt.identity.user.deleted
 
 Produced: `dev.synthwerk.llm.ai_settings.changed.v1` (see [AI settings](#ai-settings-39)).
 
-Produced: `dev.synthwerk.llm.message.completed.v1` on `evt.llm.message.completed.v1`, stream `EVT_LLM` (`evt.llm.>`, created or updated by the service at start). Written in the same transaction as the final message (kit outbox), for `completed`, `failed` and `canceled`. `subject` = message id, `orgid` = org, `actor` = `user:<sub>`. Data: ids, model alias, provider, token counts, latency, time to first token, status.
+Produced: `dev.synthwerk.llm.message.completed.v1` on `evt.llm.message.completed.v1`, stream `EVT_LLM` (`evt.llm.>`, created or updated by the service at start). Written in the same transaction as the final message (kit outbox), for `completed`, `failed` and `canceled`. `subject` = message id, `orgid` = org, `actor` = `user:<sub>`. Data: ids, model alias, provider (the one that answered, #56), token counts, latency, time to first token, status.
 
 ## Config
 
 `SYNTHWERK_LLM_*` (see `cmd/llm/main.go` and `internal/config`): `PROVIDER`, `BASE_URL`, `API_KEY[_FILE]`, `MODEL_ALIASES` (`default=qwen3.5:4b`; the alias `default` must exist), `SYSTEM_PROMPT`, `MAX_INPUT_CHARS` (8000), `MAX_STREAMS_PER_OWNER` (2), `MAX_CONTEXT_CHARS` (24000), `STREAM_TIMEOUT` (120s), `PROVIDER_CONCURRENCY` (1), `QUEUE_TIMEOUT` (10s), `FAKE_DELAY` (0s), `QUOTA_USER_TOKENS` (50000 per UTC day, 0 = no limit), `QUOTA_ORG_TOKENS` (500000, 0 = no limit), `QUOTA_RESERVE_TOKENS` (1024; a non-zero limit must be above it), `OIDC_ISSUER`, `OIDC_AUDIENCE`, `JWKS_URL`, `WIDGET_ISSUER` (iss of identity widget tokens; empty = refused), `WIDGET_AUDIENCE` (`synthwerk-api`), `WIDGET_JWKS_URL` (default `<WIDGET_ISSUER>/.well-known/jwks.json`; set the internal URL in compose), `IDENTITY_URL` (identity base URL for the AI settings and the widget origin lookup; empty = `/v1/ai-settings` answers 503 and widget CORS uses the static list only), `CORS_ORIGINS` (comma list of first-party origins for the widget chat routes, for example `http://localhost:3000`; empty by default; an invalid item stops the start), `DATABASE_URL`, `NATS_URL`, `HTTP_ADDR`.
+
+Fallback chain (#56): `REGION` of the primary (`eu` or `non_eu`; default `eu` for `ollama` and `fake`, required for `openai_compat`), `FALLBACKS` (names in order, `a-z0-9_`; empty = none), per name `FALLBACK_<NAME>_PROVIDER`, `_BASE_URL` (required), `_API_KEY[_FILE]`, `_REGION` (required), `_MODEL_ALIASES` (`alias=model`, aliases of `MODEL_ALIASES` only), `ALLOW_NON_EU` (`false`), `FIRST_TOKEN_TIMEOUT` (30s), `BREAKER_FAILURES` (3), `BREAKER_OPEN` (30s). Example: `FALLBACKS=backup`, `FALLBACK_BACKUP_PROVIDER=openai_compat`, `FALLBACK_BACKUP_BASE_URL=https://…/v1`, `FALLBACK_BACKUP_REGION=eu`, `FALLBACK_BACKUP_MODEL_ALIASES=default=<model>`.
 
 ## Tests
 
@@ -197,6 +213,8 @@ Produced: `dev.synthwerk.llm.message.completed.v1` on `evt.llm.message.completed
 - `tests/unit/identity/widgetorigins_test.go` — `WidgetOriginListed - identity answers 204 - yes; path, escaped origin, no token`; 404 → no; other status, unreachable → `ErrUnavailable`.
 - `tests/integration/chat/cors_test.go` — `Preflight, Create, Send - listed customer origin - 204, 201, SSE, all with the origin allowed`.
 - `tests/contract/provider` — conformance of `fake` and `openaicompat`.
+- `tests/unit/chain` (#56) — `Chat - primary fails before the first token (503, 429, unavailable, broken stream) - the next link answers, in order, with its own model`; `Chat - fails after the first token - no fallback`; `Chat - 400 - no fallback, circuit unchanged`; `Chat - no first token in time - next link; the last link waits`; `Chat - client abort - no fallback`; `Chat - alias the fallback does not serve - primary only`; `Breaker - open skips, half-open lets one probe, success closes, failed probe opens again, last link always tried`; `New - non-EU link without the opt-in - refused`. Over HTTP with `openaicompat`: connection refused, 503, 429, headers without a token → the fallback's answer and usage; connection drop after the first token → no fallback; all down → last error.
+- `tests/integration/chat/fallback_test.go` (#56) — `Send - primary blocked (503) - the fallback streams; event, logs and quota name it`; `Send - fails after the first token - error event, no fallback`; `Send - every provider down - 503, nothing charged`.
 - `tests/unit/config`, `tests/unit/sse`, `tests/unit/quota` (UTC window, `Retry-After` range, error matching).
 
 ## Not in this slice
@@ -212,3 +230,4 @@ Entitlement-based limits (#31, the `quota.Source` seam is ready), a `GET` of the
 | 2026-10-30 | AI settings per org: `GET`/`PUT /v1/ai-settings`, `ai_settings.changed.v1`, migration `0005_ai_settings.sql`, `SYNTHWERK_LLM_IDENTITY_URL` (synthwerk#39). Contracts `go` at the #39 commit (contracts PR #26). |
 | 2026-10-30 | CORS of the widget chat routes in llm (infra#21): `SYNTHWERK_LLM_CORS_ORIGINS`, identity lookup `GET /internal/v1/widget-origins`, `OPTIONS` without token. Frontmatter for the feature-doc check. |
 | 2026-10-30 | CORS origin lookups: at most 8 in flight, a busy slot denies at once without a call (security review, infra#24). |
+| 2026-10-30 | Fallback provider (synthwerk#56): ordered chain per alias, fall-over before the first token only, circuit breaker per provider, `eu`/`non_eu` region with `ALLOW_NON_EU` opt-in, metrics and logs per provider and reason. New env: `REGION`, `FALLBACKS`, `FALLBACK_<NAME>_*`, `ALLOW_NON_EU`, `FIRST_TOKEN_TIMEOUT`, `BREAKER_FAILURES`, `BREAKER_OPEN`. |
