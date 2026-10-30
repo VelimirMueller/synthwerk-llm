@@ -32,6 +32,22 @@ const (
 // Providers lists the accepted provider names.
 var Providers = []string{ProviderOllama, ProviderOpenAICompat, ProviderFake}
 
+// Regions of a provider (#56): where the prompts go. synthwerk docs/infrastructure.md:
+// all data stays in the EU, so RegionNonEU needs ALLOW_NON_EU=true.
+const (
+	RegionEU    = "eu"
+	RegionNonEU = "non_eu"
+)
+
+// Fallback chain defaults (#56).
+const (
+	DefaultFirstTokenTimeout = "30s"
+	DefaultBreakerFailures   = 3
+	DefaultBreakerOpen       = "30s"
+)
+
+var fallbackNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+
 // DefaultAlias is the model alias a conversation gets without a choice. #72 runs
 // its eval against it, so the name is stable.
 const DefaultAlias = "default"
@@ -65,6 +81,19 @@ type Config struct {
 	BaseURL string
 	// APIKey for openai_compat. Secret, never logged.
 	APIKey string
+	// Region of the primary provider: RegionEU or RegionNonEU (#56).
+	Region string
+	// Fallbacks are the fallback providers in order (#56). Empty: the primary only.
+	Fallbacks []Fallback
+	// AllowNonEU lets a provider with RegionNonEU in. Default false: set it per
+	// environment, on purpose.
+	AllowNonEU bool
+	// FirstTokenTimeout is the max wait for the first piece before the chain falls
+	// over. Only used when a fallback serves the alias.
+	FirstTokenTimeout time.Duration
+	// BreakerFailures in a row open the circuit of a provider for BreakerOpen.
+	BreakerFailures int
+	BreakerOpen     time.Duration
 	// FakeDelay is the delay per piece of the fake provider (local stack, stack test).
 	FakeDelay time.Duration
 	// Aliases maps a model alias to the provider model name. Always has DefaultAlias.
@@ -115,6 +144,23 @@ type Config struct {
 	CORSOrigins []string
 }
 
+// Fallback is one fallback provider (#56), read from
+// SYNTHWERK_LLM_FALLBACK_<NAME>_* (NAME upper case).
+type Fallback struct {
+	// Name in logs, metrics and the completed event.
+	Name string
+	// Provider is the adapter name: ollama, openai_compat or fake.
+	Provider string
+	BaseURL  string
+	// APIKey is secret, never logged.
+	APIKey string
+	// Region is RegionEU or RegionNonEU. Required.
+	Region string
+	// Aliases maps the aliases this provider serves to its model names. Every alias
+	// is one of MODEL_ALIASES: a fallback never adds a model.
+	Aliases map[string]string
+}
+
 // Load reads the config. getenv is os.Getenv in production.
 func Load(getenv func(string) string) (Config, error) {
 	get := func(name, def string) string {
@@ -156,6 +202,11 @@ func Load(getenv func(string) string) (Config, error) {
 		errs = append(errs, err)
 	}
 	c.APIKey = key
+	c.Region = get("REGION", "")
+	if c.Region == "" && c.Provider != ProviderOpenAICompat {
+		c.Region = RegionEU // ollama and fake run next to the gateway
+	}
+	errs = append(errs, checkRegion("REGION", c.Region)...)
 
 	c.Aliases, err = ParseAliases(get("MODEL_ALIASES", DefaultModelAliases))
 	if err != nil {
@@ -173,6 +224,7 @@ func Load(getenv func(string) string) (Config, error) {
 		{"PROVIDER_CONCURRENCY", 1, 1, &c.ProviderConcurrency},
 		{"MAX_CONTEXT_CHARS", 24000, 100, &c.MaxContextChars},
 		{"QUOTA_RESERVE_TOKENS", DefaultQuotaReserveTokens, 1, &c.QuotaReserveTokens},
+		{"BREAKER_FAILURES", DefaultBreakerFailures, 1, &c.BreakerFailures},
 	}
 	for _, i := range ints {
 		v, err := strconv.Atoi(get(i.name, strconv.Itoa(i.def)))
@@ -201,6 +253,7 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		*q.dst = v
 	}
+	errs = append(errs, c.loadFallbacks(getenv, get)...)
 	if c.MaxInputChars > 8000 {
 		errs = append(errs, fmt.Errorf("%s must be <= 8000 (contract limit)", env.Key(Service, "MAX_INPUT_CHARS")))
 	}
@@ -212,10 +265,13 @@ func Load(getenv func(string) string) (Config, error) {
 		{"STREAM_TIMEOUT", "120s", &c.StreamTimeout},
 		{"QUEUE_TIMEOUT", "10s", &c.QueueTimeout},
 		{"FAKE_DELAY", "0s", &c.FakeDelay},
+		{"FIRST_TOKEN_TIMEOUT", DefaultFirstTokenTimeout, &c.FirstTokenTimeout},
+		{"BREAKER_OPEN", DefaultBreakerOpen, &c.BreakerOpen},
 	}
 	for _, d := range durs {
 		v, err := time.ParseDuration(get(d.name, d.def))
-		if err != nil || v < 0 {
+		positive := d.name == "FIRST_TOKEN_TIMEOUT" || d.name == "BREAKER_OPEN"
+		if err != nil || v < 0 || (positive && v == 0) {
 			errs = append(errs, fmt.Errorf("%s must be a duration like 30s", env.Key(Service, d.name)))
 		}
 		*d.dst = v
@@ -254,6 +310,96 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("config: %w", errors.Join(errs...))
 	}
 	return c, nil
+}
+
+// checkRegion checks the region of a provider. name is the env key without prefix.
+func checkRegion(name, region string) []error {
+	switch region {
+	case RegionEU, RegionNonEU:
+		return nil
+	case "":
+		return []error{fmt.Errorf("%s is required (%s or %s)", env.Key(Service, name), RegionEU, RegionNonEU)}
+	default:
+		return []error{fmt.Errorf("%s=%q must be %s or %s", env.Key(Service, name), region, RegionEU, RegionNonEU)}
+	}
+}
+
+// loadFallbacks reads the fallback chain (#56): FALLBACKS names the providers in
+// order, FALLBACK_<NAME>_* configures each one. Run it after the aliases and the
+// primary.
+func (c *Config) loadFallbacks(getenv func(string) string, get func(name, def string) string) []error {
+	var errs []error
+	allow := get("ALLOW_NON_EU", "false")
+	v, err := strconv.ParseBool(allow)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("%s must be true or false", env.Key(Service, "ALLOW_NON_EU")))
+	}
+	c.AllowNonEU = v
+	if c.Region == RegionNonEU && !c.AllowNonEU {
+		errs = append(errs, fmt.Errorf("%s is %s: set %s=true to send prompts outside the EU", env.Key(Service, "REGION"), RegionNonEU, env.Key(Service, "ALLOW_NON_EU")))
+	}
+	seen := map[string]bool{c.Provider: true}
+	for name := range strings.SplitSeq(get("FALLBACKS", ""), ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if !fallbackNameRe.MatchString(name) || seen[name] {
+			errs = append(errs, fmt.Errorf("%s: %q must be a new name like backup (a-z, 0-9, _), not the primary's", env.Key(Service, "FALLBACKS"), name))
+			continue
+		}
+		seen[name] = true
+		f, ferrs := c.loadFallback(getenv, get, name)
+		errs = append(errs, ferrs...)
+		c.Fallbacks = append(c.Fallbacks, f)
+	}
+	return errs
+}
+
+// loadFallback reads FALLBACK_<NAME>_*.
+func (c *Config) loadFallback(getenv func(string) string, get func(name, def string) string, name string) (Fallback, []error) {
+	var errs []error
+	pre := "FALLBACK_" + strings.ToUpper(name) + "_"
+	f := Fallback{Name: name, Provider: get(pre+"PROVIDER", ""), BaseURL: get(pre+"BASE_URL", ""), Region: get(pre+"REGION", "")}
+	switch f.Provider {
+	case ProviderOllama, ProviderOpenAICompat:
+		if !absHTTP(f.BaseURL) {
+			errs = append(errs, fmt.Errorf("%s must be an absolute http(s) URL", env.Key(Service, pre+"BASE_URL")))
+		}
+	case ProviderFake:
+		if c.Env == "stg" || c.Env == "prd" {
+			errs = append(errs, fmt.Errorf("the fake provider is refused in %s (%s)", c.Env, env.Key(Service, pre+"PROVIDER")))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("%s=%q must be one of %s", env.Key(Service, pre+"PROVIDER"), f.Provider, strings.Join(Providers, ", ")))
+	}
+	key, err := secret(getenv, pre+"API_KEY")
+	if err != nil {
+		errs = append(errs, err)
+	}
+	f.APIKey = key
+	errs = append(errs, checkRegion(pre+"REGION", f.Region)...)
+	if f.Region == RegionNonEU && !c.AllowNonEU {
+		errs = append(errs, fmt.Errorf("fallback %q is %s: set %s=true to send prompts outside the EU", name, RegionNonEU, env.Key(Service, "ALLOW_NON_EU")))
+	}
+	f.Aliases = map[string]string{}
+	for pair := range strings.SplitSeq(get(pre+"MODEL_ALIASES", ""), ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		alias, model, ok := strings.Cut(pair, "=")
+		alias, model = strings.TrimSpace(alias), strings.TrimSpace(model)
+		if _, known := c.Aliases[alias]; !ok || model == "" || !known {
+			errs = append(errs, fmt.Errorf("%s: %q is not alias=model with an alias of %s", env.Key(Service, pre+"MODEL_ALIASES"), pair, env.Key(Service, "MODEL_ALIASES")))
+			continue
+		}
+		f.Aliases[alias] = model
+	}
+	if len(f.Aliases) == 0 {
+		errs = append(errs, fmt.Errorf("%s must name at least one alias", env.Key(Service, pre+"MODEL_ALIASES")))
+	}
+	return f, errs
 }
 
 // secret reads NAME from the env or from the file in NAME_FILE.

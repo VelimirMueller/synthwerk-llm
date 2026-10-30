@@ -138,22 +138,23 @@ func (p *Provider) Chat(ctx context.Context, req provider.Request) (provider.Str
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		// The error names the URL and the network cause, never a body.
-		return nil, fmt.Errorf("%w: request failed", provider.ErrUnavailable)
+		// The error names no URL, no network cause and no body.
+		return nil, provider.ErrConnect
 	}
 	if res.StatusCode != http.StatusOK {
 		// Drain a little so the connection can be reused. The body is never kept.
 		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 64<<10))
 		_ = res.Body.Close()
-		return nil, fmt.Errorf("%w: status %d", provider.ErrUnavailable, res.StatusCode)
+		return nil, &provider.StatusError{Code: res.StatusCode}
 	}
 	sc := bufio.NewScanner(res.Body)
 	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	return &stream{body: res.Body, sc: sc, input: provider.EstimateInput(req.Messages)}, nil
 }
 
-// ErrStream means the provider sent a stream the adapter cannot read.
-var ErrStream = errors.New("openaicompat: bad stream")
+// ErrStream means the provider sent a stream the adapter cannot read. It is
+// provider.ErrStream, so the fallback chain sees it without this package.
+var ErrStream = provider.ErrStream
 
 type stream struct {
 	body     io.ReadCloser

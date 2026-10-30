@@ -153,3 +153,82 @@ func TestLoadCORSOrigins(t *testing.T) {
 		}
 	}
 }
+
+// fallbackEnv is one EU fallback "backup" on openai_compat for the alias default.
+func fallbackEnv(extra map[string]string) map[string]string {
+	m := map[string]string{
+		"SYNTHWERK_LLM_MODEL_ALIASES":                 "default=qwen3.5:4b,small=qwen3.5:0.8b",
+		"SYNTHWERK_LLM_FALLBACKS":                     "backup",
+		"SYNTHWERK_LLM_FALLBACK_BACKUP_PROVIDER":      "openai_compat",
+		"SYNTHWERK_LLM_FALLBACK_BACKUP_BASE_URL":      "https://llm.example.eu/v1",
+		"SYNTHWERK_LLM_FALLBACK_BACKUP_API_KEY":       "sk-fallback-canary",
+		"SYNTHWERK_LLM_FALLBACK_BACKUP_REGION":        "eu",
+		"SYNTHWERK_LLM_FALLBACK_BACKUP_MODEL_ALIASES": "default=mistral-small",
+	}
+	for k, v := range extra {
+		m[k] = v
+	}
+	return m
+}
+
+// Load - fallback chain (#56): off by default; one EU fallback is read in order.
+func TestLoadFallbacks(t *testing.T) {
+	c, err := config.Load(envOf(nil))
+	if err != nil || len(c.Fallbacks) != 0 || c.Region != config.RegionEU || c.AllowNonEU ||
+		c.FirstTokenTimeout.Seconds() != 30 || c.BreakerFailures != 3 || c.BreakerOpen.Seconds() != 30 {
+		t.Fatalf("defaults: %+v err %v", c, err)
+	}
+	c, err = config.Load(envOf(fallbackEnv(nil)))
+	if err != nil || len(c.Fallbacks) != 1 {
+		t.Fatalf("c=%+v err=%v", c.Fallbacks, err)
+	}
+	f := c.Fallbacks[0]
+	if f.Name != "backup" || f.Provider != "openai_compat" || f.Region != "eu" || f.APIKey != "sk-fallback-canary" ||
+		len(f.Aliases) != 1 || f.Aliases["default"] != "mistral-small" {
+		t.Fatalf("fallback %+v", f)
+	}
+	c, err = config.Load(envOf(fallbackEnv(map[string]string{
+		"SYNTHWERK_LLM_FALLBACK_BACKUP_REGION": "non_eu", "SYNTHWERK_LLM_ALLOW_NON_EU": "true",
+	})))
+	if err != nil || !c.AllowNonEU || c.Fallbacks[0].Region != "non_eu" {
+		t.Fatalf("opt-in: %+v err %v", c.Fallbacks, err)
+	}
+}
+
+// Load - fallback chain (#56): anything unclear refuses the start.
+func TestLoadFallbacksRefuse(t *testing.T) {
+	cases := map[string]struct {
+		env  map[string]string
+		want string
+	}{
+		"non-EU without opt-in":   {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACK_BACKUP_REGION": "non_eu"}), `fallback "backup" is non_eu`},
+		"non-EU opt-in not bool":  {fallbackEnv(map[string]string{"SYNTHWERK_LLM_ALLOW_NON_EU": "yes please"}), "ALLOW_NON_EU must be true or false"},
+		"primary non-EU":          {map[string]string{"SYNTHWERK_LLM_REGION": "non_eu"}, "REGION is non_eu"},
+		"primary bad region":      {map[string]string{"SYNTHWERK_LLM_REGION": "us"}, `REGION="us" must be`},
+		"openai_compat no region": {map[string]string{"SYNTHWERK_LLM_PROVIDER": "openai_compat", "SYNTHWERK_LLM_BASE_URL": "https://x.eu/v1"}, "SYNTHWERK_LLM_REGION is required"},
+		"no region":               {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACK_BACKUP_REGION": ""}), "FALLBACK_BACKUP_REGION is required"},
+		"unknown alias":           {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACK_BACKUP_MODEL_ALIASES": "large=x"}), "with an alias of SYNTHWERK_LLM_MODEL_ALIASES"},
+		"no alias":                {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACK_BACKUP_MODEL_ALIASES": ""}), "must name at least one alias"},
+		"bad name":                {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACKS": "Back-Up"}), `"Back-Up" must be a new name`},
+		"name of the primary":     {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACKS": "ollama"}), `"ollama" must be a new name`},
+		"name twice":              {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACKS": "backup,backup"}), `"backup" must be a new name`},
+		"unknown provider":        {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACK_BACKUP_PROVIDER": "anthropic"}), "FALLBACK_BACKUP_PROVIDER=\"anthropic\" must be one of"},
+		"relative url":            {fallbackEnv(map[string]string{"SYNTHWERK_LLM_FALLBACK_BACKUP_BASE_URL": "llm/v1"}), "FALLBACK_BACKUP_BASE_URL must be an absolute"},
+		"fake in prd": {fallbackEnv(map[string]string{
+			"SYNTHWERK_LLM_FALLBACK_BACKUP_PROVIDER": "fake", "SYNTHWERK_PLATFORM_ENV": "prd",
+		}), "fake provider is refused in prd"},
+		"zero first token timeout": {map[string]string{"SYNTHWERK_LLM_FIRST_TOKEN_TIMEOUT": "0s"}, "FIRST_TOKEN_TIMEOUT"},
+		"zero breaker failures":    {map[string]string{"SYNTHWERK_LLM_BREAKER_FAILURES": "0"}, "BREAKER_FAILURES"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := config.Load(envOf(tc.env))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want it to contain %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), "sk-fallback-canary") {
+				t.Fatalf("the key is in the error: %v", err)
+			}
+		})
+	}
+}
