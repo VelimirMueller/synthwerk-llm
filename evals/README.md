@@ -81,6 +81,17 @@ Exit code 0 = gate passed, 1 = gate failed, 2 = the run could not happen.
 - New baseline: run the eval with `-write-baseline evals/chat/v1/baseline.json` on the model of the alias `default`, or take `cases[].passed` from the report artifact of the CI run.
 - A change to `thresholds.json` or `baseline.json` needs a reason in the PR body (`thresholds.json` also has a `reason` field). A test fails when `baseline.json` was taken on another model than the default alias.
 
+## AI tools prompt-injection eval (#53)
+
+- Set: `tools/v1`, same files and gate as `chat/v1`. Every case is `injection` and `critical`. The gate needs 100 %.
+- A case adds `attack`: the tool calls of a scripted hostile model, with any JSON as `arguments`.
+- The hostile model makes these calls, then repeats every tool result word for word. So a leak in a tool shows in the answer.
+- Each case checks with `not_contains` that the answer holds no marker of another user or org. A `contains_any` check proves that the tool ran.
+- The eval scores the gateway, not a model: no model can get more than the tools give.
+- It runs in the unit stage with the fake provider (`tests/unit/eval/tools_test.go`). It needs no Ollama and no network.
+- A test with a store that ignores the owner proves that the eval fails on a leak.
+- After a change to `tools/v1/cases.jsonl`: `just eval-manifest evals/tools/v1`.
+
 ## Not in M2
 
 - Anthropic run with its own threshold file (M3, needs an environment secret).

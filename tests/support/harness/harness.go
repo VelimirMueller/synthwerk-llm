@@ -30,6 +30,7 @@ import (
 	"github.com/VelimirMueller/synthwerk-llm/internal/provider"
 	"github.com/VelimirMueller/synthwerk-llm/internal/provider/fake"
 	"github.com/VelimirMueller/synthwerk-llm/internal/quota"
+	"github.com/VelimirMueller/synthwerk-llm/internal/tools"
 	"github.com/VelimirMueller/synthwerk-llm/tests/support/sse"
 )
 
@@ -81,6 +82,11 @@ type Options struct {
 	// CORS answers CORS for the widget chat routes (infra#21). Nil: every origin
 	// is denied.
 	CORS *cors.Policy
+	// Tools turns the read-only AI tools on (#53). The store must implement
+	// tools.Store. Members answers the identity check of admin tools; nil: identity
+	// is not configured.
+	Tools   bool
+	Members tools.Members
 }
 
 // H is a running gateway.
@@ -133,6 +139,13 @@ func New(t *testing.T, st chat.Store, o Options) *H {
 		db = NopDB{}
 	}
 	ch := chat.New(cfg, st, p, o.Quota, logger)
+	if o.Tools {
+		ts, ok := st.(tools.Store)
+		if !ok {
+			t.Fatal("harness: the store does not implement tools.Store")
+		}
+		ch.WithTools(tools.New(ts, o.Members, cfg.Source, logger))
+	}
 	deps := app.Deps{DB: db, Log: logger, Chat: ch, Verifier: v, CORS: o.CORS}
 	if !o.NoWidget {
 		// Identity signs widget tokens with ES256 and typ at+jwt.

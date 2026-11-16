@@ -14,6 +14,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"unicode/utf8"
@@ -27,12 +28,37 @@ const (
 	RoleSystem    Role = "system"
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
+	// RoleTool carries the result of one tool call back to the model (#53).
+	RoleTool Role = "tool"
 )
 
 // Message is one turn of the conversation, in the one internal shape.
 type Message struct {
 	Role Role
 	Text string
+	// ToolCalls of an assistant turn that asked for tools (#53). Text may be empty.
+	ToolCalls []ToolCall
+	// ToolCallID names the call a RoleTool message answers.
+	ToolCallID string
+}
+
+// Tool is one read-only tool the model may call (#53). The gateway runs it; the
+// model only asks.
+type Tool struct {
+	// Name is the MCP tool name, <service>_<verb>_<noun>.
+	Name        string
+	Description string
+	// Parameters is the JSON Schema of the arguments.
+	Parameters json.RawMessage
+}
+
+// ToolCall is one tool call the model asked for.
+type ToolCall struct {
+	// ID is the provider's call id. The gateway echoes it in the RoleTool answer.
+	ID   string
+	Name string
+	// Arguments is the JSON text the model sent. Untrusted: it is model output.
+	Arguments string
 }
 
 // Request is one chat call.
@@ -47,6 +73,8 @@ type Request struct {
 	Messages []Message
 	// Options tune the sampling. The zero value sends nothing: the model defaults apply.
 	Options Options
+	// Tools the model may call (#53). Nil: a plain chat call.
+	Tools []Tool
 }
 
 // Options tune one call. The eval runner (#72) pins them for repeatable answers.
@@ -68,6 +96,9 @@ type FinishReason string
 const (
 	FinishStop   FinishReason = "stop"
 	FinishLength FinishReason = "length"
+	// FinishToolCalls: the model asks for tools (Result.ToolCalls). The gateway runs
+	// them and calls the model again; it never sends this reason to a client.
+	FinishToolCalls FinishReason = "tool_calls"
 )
 
 // Usage is the token use of one answer.
@@ -82,6 +113,8 @@ type Usage struct {
 type Result struct {
 	Usage  Usage
 	Finish FinishReason
+	// ToolCalls the model asked for, with Finish FinishToolCalls (#53).
+	ToolCalls []ToolCall
 }
 
 // Stream is one answer in pieces. It is not safe for concurrent use.
@@ -154,6 +187,9 @@ func EstimateInput(msgs []Message) int {
 	total := 0
 	for _, m := range msgs {
 		total += EstimateTokens(m.Text)
+		for _, c := range m.ToolCalls {
+			total += EstimateTokens(c.Name) + EstimateTokens(c.Arguments)
+		}
 	}
 	return total
 }

@@ -291,3 +291,91 @@ func TestOpenAICompatSendsOptions(t *testing.T) {
 		t.Fatalf("body %v", got)
 	}
 }
+
+// Tool calls (#53): the request carries the tools and the tool turns; streamed
+// call pieces merge by index; the calls decide the finish reason.
+func TestOpenAICompatToolCalls(t *testing.T) {
+	var mu sync.Mutex
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = io.WriteString(w, ""+
+			"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"llm_get_my_quota\",\"arguments\":\"{\"}}]}}]}\n\n"+
+			"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]}}]}\n\n"+
+			"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c2\",\"function\":{\"name\":\"llm_list_conversations\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"stop\"}]}\n\n"+
+			"data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	p, err := openaicompat.New(openaicompat.Config{BaseURL: srv.URL + "/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := p.Chat(t.Context(), provider.Request{
+		Model: "m",
+		Messages: []provider.Message{
+			{Role: provider.RoleUser, Text: "quota?"},
+			{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "c0", Name: "llm_get_my_quota", Arguments: "{}"}}},
+			{Role: provider.RoleTool, ToolCallID: "c0", Text: `{"used_tokens":1}`},
+		},
+		Tools: []provider.Tool{{Name: "llm_get_my_quota", Description: "own quota", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pieces, err := drain(st); !errors.Is(err, io.EOF) || len(pieces) != 0 {
+		t.Fatalf("pieces %v err %v", pieces, err)
+	}
+	res := st.Result()
+	if res.Finish != provider.FinishToolCalls || len(res.ToolCalls) != 2 ||
+		res.ToolCalls[0] != (provider.ToolCall{ID: "c1", Name: "llm_get_my_quota", Arguments: "{}"}) ||
+		res.ToolCalls[1] != (provider.ToolCall{ID: "c2", Name: "llm_list_conversations", Arguments: "{}"}) {
+		t.Fatalf("result %+v", res)
+	}
+	srv.Close()
+	mu.Lock()
+	defer mu.Unlock()
+	tools, _ := got["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools %v", got["tools"])
+	}
+	fn := tools[0].(map[string]any)["function"].(map[string]any)
+	if tools[0].(map[string]any)["type"] != "function" || fn["name"] != "llm_get_my_quota" {
+		t.Fatalf("tool %v", tools[0])
+	}
+	msgs := got["messages"].([]any)
+	call := msgs[1].(map[string]any)["tool_calls"].([]any)[0].(map[string]any)
+	if call["id"] != "c0" || call["type"] != "function" {
+		t.Fatalf("assistant call %v", call)
+	}
+	if m := msgs[2].(map[string]any); m["role"] != "tool" || m["tool_call_id"] != "c0" {
+		t.Fatalf("tool turn %v", m)
+	}
+}
+
+// Tool calls are model output: too many calls or too long arguments break the stream.
+func TestOpenAICompatToolCallBounds(t *testing.T) {
+	for name, chunk := range map[string]string{
+		"index":     `{"choices":[{"delta":{"tool_calls":[{"index":9,"id":"c","function":{"name":"x","arguments":"{}"}}]}}]}`,
+		"arguments": `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"x","arguments":"` + strings.Repeat("a", 17<<10) + `"}}]}}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, "data: "+chunk+"\n\ndata: [DONE]\n\n")
+			}))
+			defer srv.Close()
+			p, err := openaicompat.New(openaicompat.Config{BaseURL: srv.URL + "/v1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			st, err := p.Chat(t.Context(), req())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := drain(st); !errors.Is(err, provider.ErrStream) {
+				t.Fatalf("err %v, want ErrStream", err)
+			}
+		})
+	}
+}

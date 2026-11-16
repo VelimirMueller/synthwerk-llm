@@ -74,6 +74,12 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	if err != nil {
 		return fail(err)
 	}
+	for _, c := range set.Cases {
+		if len(c.Attack) > 0 {
+			// The AI tools set (#53) needs the scripted hostile model of the unit stage.
+			return fail(fmt.Errorf("eval: %s is a tools set: it runs in tests/unit/eval, not against a model", *setDir))
+		}
+	}
 	baseURL := envOr(getenv, "SYNTHWERK_LLM_BASE_URL", "")
 	if baseURL == "" && *providerName == config.ProviderOllama {
 		baseURL = "http://localhost:11434/v1"
