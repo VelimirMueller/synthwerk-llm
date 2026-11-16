@@ -10,8 +10,10 @@
 //   - User tools read only the caller's own rows in the token org (row level
 //     security, the same Owner as the chat). Admin tools need a user token with the
 //     org role owner or admin and an active membership in identity.
-//   - Each call of an admin tool, allowed or refused, is an audit fact
-//     (dev.synthwerk.llm.toolcall.executed.v3) that identity lists for the org.
+//   - Each admin tool call of an active org member, allowed or refused, is an audit
+//     fact (dev.synthwerk.llm.toolcall.executed.v3) that identity lists for the org.
+//     Without an identity org id (widget token, no membership, identity down) there
+//     is no org to list it under: the call is refused and only logged.
 //   - Results are small JSON objects. They never hold another user's data.
 //   - Logs hold the tool name and the outcome. Never arguments, never results.
 package tools

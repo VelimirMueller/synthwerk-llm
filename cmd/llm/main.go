@@ -235,6 +235,10 @@ func run(ctx context.Context) error {
 
 	// AI tools (#53): read-only, scope from the token. Admin tools need identity.
 	if cfg.Tools {
+		if members == nil {
+			logger.WarnContext(ctx, "AI admin tools refuse every call: identity is not configured",
+				slog.String("event.name", "llm.tools.admin_unavailable"))
+		}
 		chatHandler.WithTools(tools.New(st, members, source, logger))
 		logger.InfoContext(ctx, "AI tools on", slog.String("event.name", "llm.tools.enabled"))
 	}

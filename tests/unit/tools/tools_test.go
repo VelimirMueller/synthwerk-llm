@@ -234,8 +234,9 @@ func TestLoopIsBounded(t *testing.T) {
 			toolTurns++
 		}
 	}
-	if toolTurns != 4 {
-		t.Fatalf("tool turns %d, want 4", toolTurns)
+	// Every call gets an answer; the calls above the cap did not run.
+	if toolTurns != len(calls) || !strings.Contains(reqs[1].Messages[len(reqs[1].Messages)-1].Text, "did not run") {
+		t.Fatalf("tool turns %d, want %d", toolTurns, len(calls))
 	}
 	res := st.Result()
 	if res.Finish == provider.FinishToolCalls || res.Usage.InputTokens == 0 || res.Usage.OutputTokens == 0 {
@@ -245,4 +246,36 @@ func TestLoopIsBounded(t *testing.T) {
 		t.Fatalf("answered by %q", name)
 	}
 	_ = st.Close()
+}
+
+// failSecond answers the first call with a tool call and fails every later call.
+type failSecond struct{ fake.Provider }
+
+func (p *failSecond) Chat(ctx context.Context, req provider.Request) (provider.Stream, error) {
+	if p.Calls() > 0 {
+		return nil, provider.ErrUnavailable
+	}
+	return p.Provider.Chat(ctx, req)
+}
+
+// A provider failure after a tool round ends the answer with ErrStream; the loop
+// then stays at its end and reports a stop.
+func TestLoopEndsOnALaterRoundFailure(t *testing.T) {
+	r, _ := registry(t, &memStore{}, &members{})
+	p := &failSecond{fake.Provider{Tools: func(provider.Request) []provider.ToolCall {
+		return []provider.ToolCall{{ID: "c", Name: tools.GetMyQuota, Arguments: "{}"}}
+	}}}
+	st, err := r.Chat(t.Context(), p, provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Text: "hi"}}}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Next(); !errors.Is(err, provider.ErrStream) {
+		t.Fatalf("err %v, want ErrStream", err)
+	}
+	if _, err := st.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("after the failure: %v, want EOF", err)
+	}
+	if res := st.Result(); res.Finish != provider.FinishStop {
+		t.Fatalf("result %+v", res)
+	}
 }

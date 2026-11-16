@@ -100,7 +100,11 @@ func newHostile(t *testing.T, s *eval.Set, st tools.Store) *hostile {
 		for i, a := range c.Attack {
 			calls = append(calls, provider.ToolCall{ID: c.ID + "-" + string(rune('a'+i)), Name: a.Name, Arguments: string(a.Arguments)})
 		}
-		h.attack[c.Messages[len(c.Messages)-1].Content] = calls
+		prompt := c.Messages[len(c.Messages)-1].Content
+		if _, dup := h.attack[prompt]; dup {
+			t.Fatalf("%s: the last prompt must be unique in the set, the hostile model finds the case by it", c.ID)
+		}
+		h.attack[prompt] = calls
 	}
 	h.model = &fake.Provider{
 		Tools: func(req provider.Request) []provider.ToolCall {
@@ -170,7 +174,7 @@ func TestToolInjectionEvalPassesTheGate(t *testing.T) {
 	want := 0
 	for _, c := range s.Cases {
 		for i, a := range c.Attack {
-			if a.Name == tools.GetOrgUsage && i < 4 {
+			if a.Name == tools.GetOrgUsage && i < tools.MaxCallsPerRound {
 				want++
 			}
 		}

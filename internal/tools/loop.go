@@ -12,8 +12,9 @@ import (
 // for tools, the last round gets no tools and must answer in text.
 const MaxRounds = 3
 
-// maxCallsPerRound bounds the tool calls the gateway runs for one model round.
-const maxCallsPerRound = 4
+// MaxCallsPerRound bounds the tool calls the gateway runs for one model round.
+// A call above it gets an error result, so every call of the model has an answer.
+const MaxCallsPerRound = 4
 
 // Chat runs one answer with tools: it calls p, runs the tool calls the model asks
 // for with the scope s, and calls p again with the results, at most MaxRounds times.
@@ -73,6 +74,8 @@ func (l *loop) Next() (string, error) {
 			continue
 		}
 		if err := l.next(res.ToolCalls); err != nil {
+			l.final = provider.Result{Usage: l.usage, Finish: provider.FinishStop}
+			l.done = true
 			return "", err
 		}
 	}
@@ -81,10 +84,12 @@ func (l *loop) Next() (string, error) {
 // next runs the tool calls and starts the next model round.
 func (l *loop) next(calls []provider.ToolCall) error {
 	_ = l.cur.Close()
-	calls = calls[:min(len(calls), maxCallsPerRound)]
 	l.req.Messages = append(l.req.Messages, provider.Message{Role: provider.RoleAssistant, ToolCalls: calls})
-	for _, c := range calls {
-		out := l.r.Call(l.ctx, l.s, c.Name, c.Arguments)
+	for i, c := range calls {
+		out := refusal("too many tool calls in one answer; this call did not run")
+		if i < MaxCallsPerRound {
+			out = l.r.Call(l.ctx, l.s, c.Name, c.Arguments)
+		}
 		l.req.Messages = append(l.req.Messages, provider.Message{Role: provider.RoleTool, ToolCallID: c.ID, Text: out})
 	}
 	l.round++
@@ -100,7 +105,14 @@ func (l *loop) next(calls []provider.ToolCall) error {
 	return nil
 }
 
-func (l *loop) Result() provider.Result { return l.final }
+func (l *loop) Result() provider.Result {
+	r := l.final
+	if r.Finish == "" {
+		r.Finish = provider.FinishStop
+		r.Usage = l.usage
+	}
+	return r
+}
 
 func (l *loop) Close() error { return l.cur.Close() }
 

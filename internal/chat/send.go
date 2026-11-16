@@ -172,11 +172,11 @@ func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 
 // bearer is the caller's token from the Authorization header ("" when missing).
 func bearer(r *http.Request) string {
-	b, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !ok {
+	h := r.Header.Get("Authorization")
+	if len(h) < 7 || !strings.EqualFold(h[:7], "Bearer ") {
 		return ""
 	}
-	return b
+	return strings.TrimSpace(h[7:])
 }
 
 // charge is what an answer costs the quota. A completed answer costs the counts of
