@@ -22,7 +22,7 @@ const (
 // list serves GET /v1/conversations: the caller's own conversations in the token
 // org, newest first (synthwerk#54). A widget token sees only its own origin.
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
-	_, o, ok := owner(w, r)
+	_, o, ok := h.owner(w, r)
 	if !ok {
 		return
 	}

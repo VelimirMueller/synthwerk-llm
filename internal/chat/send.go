@@ -57,7 +57,7 @@ type answer struct {
 
 func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	p, o, ok := owner(w, r)
+	p, o, ok := h.owner(w, r)
 	if !ok {
 		return
 	}

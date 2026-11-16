@@ -74,6 +74,13 @@ type Config struct {
 	QuotaReserveTokens int
 	// Source is the CloudEvents source, /synthwerk/llm/<env>.
 	Source string
+	// WidgetFrameOrigins are the canonical origins of the widget frame page
+	// (synthwerk-widgets#33): the widget host on the edge. A widget token passes from
+	// its own origin (synthwerk:origin) or from one of these. Empty: its own origin only.
+	// List only origins that serve Synthwerk's own frame page: it is one shared host for
+	// all customers, and the frame itself accepts a token only from its parent page when
+	// the claim equals that page origin.
+	WidgetFrameOrigins []string
 }
 
 // Handler serves the chat routes.

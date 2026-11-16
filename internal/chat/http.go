@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 
 	"github.com/google/uuid"
 
@@ -59,8 +60,11 @@ func (h *Handler) Register(mux *http.ServeMux, chatAuthn, userAuthn func(http.Ha
 // Owner = token org and sub: AI settings and the org quota apply per org, the user
 // quota per sub, for a widget token too. A widget token also sets Owner.Origin: its
 // conversations stay bound to that origin (#54).
+// The Origin header must equal the claim, or a configured widget frame origin
+// (synthwerk-widgets#33): the host page trades the token and hands it into the chat
+// iframe on the widget host. The claim must still be a non-empty string.
 // It writes the refusal and returns ok false.
-func owner(w http.ResponseWriter, r *http.Request) (*auth.Principal, store.Owner, bool) {
+func (h *Handler) owner(w http.ResponseWriter, r *http.Request) (*auth.Principal, store.Owner, bool) {
 	p, ok := auth.FromContext(r.Context())
 	if !ok || p.Subject == "" || p.OrgID == "" {
 		// auth.Middleware never lets this through; keep the refusal anyway.
@@ -71,7 +75,7 @@ func owner(w http.ResponseWriter, r *http.Request) (*auth.Principal, store.Owner
 	o := store.Owner{Tenant: p.OrgID, User: p.Subject}
 	if origin, has := p.Raw[auth.ClaimOrigin]; has {
 		s, _ := origin.(string)
-		if s == "" || s != r.Header.Get("Origin") {
+		if s == "" || !h.originAllowed(s, r) {
 			problem.Write(w, r, http.StatusForbidden, problem.CodeForbidden, "", 0)
 			return nil, store.Owner{}, false
 		}
@@ -80,8 +84,26 @@ func owner(w http.ResponseWriter, r *http.Request) (*auth.Principal, store.Owner
 	return p, o, true
 }
 
+// originAllowed reports whether the request may use a token bound to claim: its Origin
+// is the claim or a widget frame origin (exact match, as for the claim).
+//
+// A browser sends no Origin on a same-origin GET or HEAD. The chat frame is on the
+// edge origin, so its GETs (past conversations) come without one. Such a request
+// passes only when frame origins are set and the browser marks it same-origin:
+// a page cannot set Sec-Fetch-Site (a forbidden header). A client outside a
+// browser can send any header, the same as it can send any Origin.
+func (h *Handler) originAllowed(claim string, r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return len(h.cfg.WidgetFrameOrigins) > 0 &&
+			(r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+			r.Header.Get("Sec-Fetch-Site") == "same-origin"
+	}
+	return origin == claim || slices.Contains(h.cfg.WidgetFrameOrigins, origin)
+}
+
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
-	_, o, ok := owner(w, r)
+	_, o, ok := h.owner(w, r)
 	if !ok {
 		return
 	}
@@ -113,7 +135,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
-	_, o, ok := owner(w, r)
+	_, o, ok := h.owner(w, r)
 	if !ok {
 		return
 	}

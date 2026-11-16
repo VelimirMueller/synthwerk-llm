@@ -141,6 +141,9 @@ type Config struct {
 	// Tools turns the read-only AI tools of the chat on (TOOLS, synthwerk#53).
 	// Default false: the provider must support tool calls (Ollama with qwen3.5 does).
 	Tools bool
+	// WidgetFrameOrigins are the canonical origins of the widget frame page
+	// (synthwerk-widgets#33). A widget token passes from them too. Empty: none.
+	WidgetFrameOrigins []string
 	// CORSOrigins are the canonical origins of first-party apps that may call the
 	// widget chat routes from a browser (infra#21). Identity answers for the
 	// customer origins. Empty: identity only.
@@ -486,6 +489,11 @@ func (c *Config) loadWidget(get func(name, def string) string) []error {
 	if len(c.WidgetAudiences) == 0 {
 		errs = append(errs, fmt.Errorf("%s must not be empty", env.Key(Service, "WIDGET_AUDIENCE")))
 	}
+	frames, err := cors.ParseOrigins(get("WIDGET_FRAME_ORIGINS", ""))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("%s: %w", env.Key(Service, "WIDGET_FRAME_ORIGINS"), err))
+	}
+	c.WidgetFrameOrigins = frames
 	c.WidgetJWKSURL = get("WIDGET_JWKS_URL", strings.TrimSuffix(c.WidgetIssuer, "/")+widgetJWKSPath)
 	if !absHTTP(c.WidgetJWKSURL) {
 		errs = append(errs, fmt.Errorf("%s must be an absolute http(s) URL", env.Key(Service, "WIDGET_JWKS_URL")))

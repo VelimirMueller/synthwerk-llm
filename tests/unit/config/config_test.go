@@ -136,6 +136,25 @@ func TestLoadWidgetIssuer(t *testing.T) {
 	}
 }
 
+// Load - widget frame origins (synthwerk-widgets#33): empty by default, canonical
+// form, an invalid item refuses the start.
+func TestLoadWidgetFrameOrigins(t *testing.T) {
+	issuer := map[string]string{"SYNTHWERK_LLM_WIDGET_ISSUER": "http://localhost:8080/identity"}
+	c, err := config.Load(envOf(issuer))
+	if err != nil || len(c.WidgetFrameOrigins) != 0 {
+		t.Fatalf("default: %v %v", c.WidgetFrameOrigins, err)
+	}
+	issuer["SYNTHWERK_LLM_WIDGET_FRAME_ORIGINS"] = "HTTPS://Edge.Example:443, http://localhost:8080"
+	c, err = config.Load(envOf(issuer))
+	if err != nil || strings.Join(c.WidgetFrameOrigins, ",") != "https://edge.example,http://localhost:8080" {
+		t.Fatalf("set: %v %v", c.WidgetFrameOrigins, err)
+	}
+	issuer["SYNTHWERK_LLM_WIDGET_FRAME_ORIGINS"] = "https://edge.example/path"
+	if _, err := config.Load(envOf(issuer)); err == nil || !strings.Contains(err.Error(), "SYNTHWERK_LLM_WIDGET_FRAME_ORIGINS") {
+		t.Fatalf("invalid: %v", err)
+	}
+}
+
 // Load - CORS origins of the widget chat routes (infra#21): empty by default,
 // canonical form, an invalid item refuses the start.
 func TestLoadCORSOrigins(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"github.com/VelimirMueller/synthwerk-contracts/go/kit/auth"
 	"github.com/VelimirMueller/synthwerk-contracts/go/kit/cloudevents"
 
+	"github.com/VelimirMueller/synthwerk-llm/internal/chat"
 	"github.com/VelimirMueller/synthwerk-llm/internal/quota"
 	"github.com/VelimirMueller/synthwerk-llm/internal/settings"
 	"github.com/VelimirMueller/synthwerk-llm/internal/store"
@@ -124,6 +125,91 @@ func TestWidgetTokenChatsFromItsOrigin(t *testing.T) {
 	// The same user with a user token owns the same conversation: one quota key per sub.
 	if res := h.Do(t, http.MethodGet, "/v1/conversations/"+id, h.Token(t, "user-w", "org-1"), nil); res.StatusCode != http.StatusOK {
 		t.Fatalf("user token of the same sub: status %d", res.StatusCode)
+	}
+}
+
+// Create, Get, Send - widget token from the widget frame origin - passes; the frame
+// origin never lets a token without its own origin claim through (synthwerk-widgets#33).
+func TestWidgetTokenFromTheFrameOrigin(t *testing.T) {
+	const frame = "https://edge.example"
+	st := &ownerStore{panicStore: panicStore{t}}
+	h := harness.New(t, st, harness.Options{Chat: func(c *chat.Config) { c.WidgetFrameOrigins = []string{frame} }})
+	tok := h.WidgetToken(t, "user-w", "org-1", shop)
+
+	id := h.Create(t, tok, "Origin", frame)
+	if res := h.Do(t, http.MethodGet, "/v1/conversations/"+id, tok, nil, "Origin", frame); res.StatusCode != http.StatusOK {
+		t.Fatalf("get from the frame: status %d", res.StatusCode)
+	}
+	if res, evs := h.Send(t, tok, id, "hi", "Origin", frame); res.StatusCode != http.StatusOK || harness.Text(t, evs) == "" {
+		t.Fatalf("send from the frame: status %d, events %v", res.StatusCode, harness.Names(evs))
+	}
+	// The host page origin still works.
+	if res := h.Do(t, http.MethodGet, "/v1/conversations/"+id, tok, nil, "Origin", shop); res.StatusCode != http.StatusOK {
+		t.Fatalf("get from the claim origin: status %d", res.StatusCode)
+	}
+
+	emptyOrigin := h.WidgetToken(t, "user-w", "org-1", "")
+	noOrigin := h.WidgetToken(t, "user-w", "org-1", "", map[string]any{auth.ClaimOrigin: nil})
+	cases := []struct {
+		name   string
+		token  string
+		origin string
+	}{
+		{"another origin", tok, "https://evil.example"},
+		{"frame origin with a trailing slash", tok, frame + "/"},
+		{"no Origin header", tok, ""},
+		{"empty claim from the frame", emptyOrigin, frame},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+" - 403", func(t *testing.T) {
+			var header []string
+			if tc.origin != "" {
+				header = []string{"Origin", tc.origin}
+			}
+			if res := h.Do(t, http.MethodGet, "/v1/conversations/"+id, tc.token, nil, header...); res.StatusCode != http.StatusForbidden {
+				t.Fatalf("status %d, want 403", res.StatusCode)
+			}
+		})
+	}
+	// A token without the claim is a user token to the chat handler: the widget issuer
+	// check refuses it before (403), whatever the Origin.
+	if res := h.Do(t, http.MethodGet, "/v1/conversations/"+id, noOrigin, nil, "Origin", frame); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("token without claim from the frame: status %d, want 403", res.StatusCode)
+	}
+
+	// The frame is same-origin with llm: a browser sends its GET without Origin, with
+	// Sec-Fetch-Site same-origin. Only such a GET or HEAD passes without Origin.
+	if res := h.Do(t, http.MethodGet, "/v1/conversations/"+id, tok, nil, "Sec-Fetch-Site", "same-origin"); res.StatusCode != http.StatusOK {
+		t.Fatalf("same-origin GET from the frame: status %d", res.StatusCode)
+	}
+	noOriginCases := []struct {
+		name, method, path, site string
+	}{
+		{"GET, cross-site", http.MethodGet, "/v1/conversations/" + id, "cross-site"},
+		{"GET, same-site", http.MethodGet, "/v1/conversations/" + id, "same-site"},
+		{"GET, no Sec-Fetch-Site", http.MethodGet, "/v1/conversations/" + id, ""},
+		{"POST, same-origin", http.MethodPost, "/v1/conversations", "same-origin"},
+	}
+	for _, tc := range noOriginCases {
+		t.Run("no Origin, "+tc.name+" - 403", func(t *testing.T) {
+			var header []string
+			if tc.site != "" {
+				header = []string{"Sec-Fetch-Site", tc.site}
+			}
+			if res := h.Do(t, tc.method, tc.path, tok, map[string]any{}, header...); res.StatusCode != http.StatusForbidden {
+				t.Fatalf("status %d, want 403", res.StatusCode)
+			}
+		})
+	}
+}
+
+// Without frame origins, a same-origin GET without Origin gets 403: the claim must
+// match the Origin header (#30).
+func TestWidgetTokenSameOriginGetWithoutFrameOrigins(t *testing.T) {
+	h := harness.New(t, panicStore{t}, harness.Options{Provider: panicProvider{t}})
+	tok := h.WidgetToken(t, "user-w", "org-1", shop)
+	if res := h.Do(t, http.MethodGet, "/v1/conversations/"+widgetID, tok, nil, "Sec-Fetch-Site", "same-origin"); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("status %d, want 403", res.StatusCode)
 	}
 }
 
