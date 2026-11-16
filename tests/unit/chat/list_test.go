@@ -2,6 +2,7 @@ package chat_test
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -50,8 +51,13 @@ func TestListRefusedBeforeTheStore(t *testing.T) {
 		"cursor too long":      "?cursor=" + strings.Repeat("A", 65),
 	} {
 		t.Run("List - "+name+" - 400 invalid_request", func(t *testing.T) {
-			if res := h.Do(t, http.MethodGet, "/v1/conversations"+query, tok, nil); res.StatusCode != http.StatusBadRequest {
-				t.Fatalf("status %d", res.StatusCode)
+			res := h.Do(t, http.MethodGet, "/v1/conversations"+query, tok, nil)
+			var p struct {
+				Code string `json:"code"`
+			}
+			_ = json.NewDecoder(res.Body).Decode(&p)
+			if res.StatusCode != http.StatusBadRequest || p.Code != "invalid_request" {
+				t.Fatalf("status %d code %q", res.StatusCode, p.Code)
 			}
 		})
 	}

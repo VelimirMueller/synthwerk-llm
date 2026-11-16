@@ -43,29 +43,16 @@ func (h *Handler) Register(mux *http.ServeMux, chatAuthn, userAuthn func(http.Ha
 		{http.MethodGet, "/v1/conversations/{id}", h.get},
 		{http.MethodPost, "/v1/conversations/{id}/messages", h.send},
 	}
-	preflight := map[string]bool{}
+	// One OPTIONS handler per path with every method of that path, in any order.
+	methods := map[string][]string{}
 	for _, rt := range widget {
 		mux.Handle(rt.method+" "+rt.path, c.Wrap(chatAuthn(rt.fn)))
-		if !preflight[rt.path] {
-			preflight[rt.path] = true
-			mux.Handle(http.MethodOptions+" "+rt.path, c.Preflight(methodsOf(widget, rt.path)...))
-		}
+		methods[rt.path] = append(methods[rt.path], rt.method)
+	}
+	for path, ms := range methods {
+		mux.Handle(http.MethodOptions+" "+path, c.Preflight(ms...))
 	}
 	mux.Handle("GET /v1/me/export", userAuthn(http.HandlerFunc(h.exportMe)))
-}
-
-// methodsOf returns the methods of the widget routes on path, in route order.
-func methodsOf(routes []struct {
-	method, path string
-	fn           http.HandlerFunc
-}, path string) []string {
-	var out []string
-	for _, rt := range routes {
-		if rt.path == path {
-			out = append(out, rt.method)
-		}
-	}
-	return out
 }
 
 // owner returns the principal's owner and checks the widget origin claim (#30).
