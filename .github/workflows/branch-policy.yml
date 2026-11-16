@@ -1,0 +1,39 @@
+# Branch policy (CI-CHECK-06, GOV-RS-04): the required check `branch-policy` on stage and main.
+# Copy as is. stage and main move only by a fast-forward of the promotion App (GOV-RS-07 bypass),
+# so a PR into stage always fails, and a PR into main passes only from a hotfix/* branch.
+# No paths filter and no draft guard (CI-COST-10, CI-COST-16): a required check must always report.
+name: branch-policy
+
+# pull_request only, no push trigger (CI-COST-05). No checkout: the check reads only the two refs.
+on:
+  pull_request:
+    branches: [stage, main]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: branch-policy-${{ github.event.number }}
+  cancel-in-progress: true
+
+jobs:
+  branch-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Allow only hotfix PRs into main and no PR into stage
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+        run: |
+          case "$BASE:$HEAD" in
+            main:hotfix/*) echo "hotfix PR into main: allowed" ;;
+            main:*) echo "::error::only hotfix/* branches may open a PR into main; everything else enters at develop"; exit 1 ;;
+            stage:*) echo "::error::stage moves only by promotion (promote.yml), never by PR"; exit 1 ;;
+            *) echo "::error::unexpected base branch $BASE"; exit 1 ;;
+          esac
