@@ -44,7 +44,7 @@ Contract: `synthwerk-contracts/openapi/llm/openapi.yaml`. All routes need `Autho
 Refusal order of a send. The model call is last:
 
 1. Token (kit `auth.Middleware` with a `MultiVerifier`: Zitadel JWKS, or the identity widget JWKS by exact `iss`) → 401 `unauthenticated`.
-2. Widget token (issuer `WIDGET_ISSUER`) without a string `synthwerk:origin` → 403. Its roles and scopes are dropped. `Origin` differs from the `synthwerk:origin` claim and from every `WIDGET_FRAME_ORIGINS` entry → 403 `forbidden`.
+2. Widget token (issuer `WIDGET_ISSUER`) without a string `synthwerk:origin` → 403. Its roles and scopes are dropped. `Origin` differs from the `synthwerk:origin` claim and from every `WIDGET_FRAME_ORIGINS` entry → 403 `forbidden`. No `Origin`: 403, except a `GET` or `HEAD` with `Sec-Fetch-Site: same-origin` while `WIDGET_FRAME_ORIGINS` is set.
 3. Body → 400 `invalid_request`. Conversation of another owner → 404. Read the org's AI settings: a model the org does not allow → 400; over the org's `max_input_chars` (at most `MAX_INPUT_CHARS`) → 413 `input_too_large`.
 4. More than `MAX_STREAMS_PER_OWNER` open streams → 429 `too_many_streams`. Read the quota limits.
 5. Store the turn and book the quota in one transaction. Over quota → 429 `quota_exhausted`, nothing stored. Wait up to `QUEUE_TIMEOUT` for a model slot → 503 `model_unavailable`. Call the provider.
