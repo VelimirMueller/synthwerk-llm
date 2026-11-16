@@ -31,6 +31,11 @@ func (s panicStore) GetConversation(context.Context, store.Owner, string) (store
 	return store.Conversation{}, nil
 }
 
+func (s panicStore) ListConversations(context.Context, store.Owner, string, int) ([]store.Summary, bool, error) {
+	s.fail()
+	return nil, false, nil
+}
+
 func (s panicStore) ConversationAlias(context.Context, store.Owner, string) (string, error) {
 	s.fail()
 	return "", nil

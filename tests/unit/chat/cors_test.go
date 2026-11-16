@@ -29,6 +29,7 @@ func (l *listedOrigins) WidgetOriginListed(_ context.Context, origin string) (bo
 }
 
 var widgetRoutes = []struct{ method, path string }{
+	{http.MethodGet, "/v1/conversations"},
 	{http.MethodPost, "/v1/conversations"},
 	{http.MethodGet, "/v1/conversations/" + widgetID},
 	{http.MethodPost, "/v1/conversations/" + widgetID + "/messages"},
@@ -64,8 +65,8 @@ func TestWidgetRoutesPreflight(t *testing.T) {
 			t.Fatalf("%d %v", res.StatusCode, res.Header)
 		}
 	})
-	t.Run("Preflight - GET requested on the create route - 403", func(t *testing.T) {
-		res := h.Do(t, http.MethodOptions, "/v1/conversations", "", nil, "Origin", shop, "Access-Control-Request-Method", "GET")
+	t.Run("Preflight - DELETE requested on the list and create route - 403", func(t *testing.T) {
+		res := h.Do(t, http.MethodOptions, "/v1/conversations", "", nil, "Origin", shop, "Access-Control-Request-Method", "DELETE")
 		if res.StatusCode != http.StatusForbidden || res.Header.Get("Access-Control-Allow-Origin") != "" {
 			t.Fatalf("%d %v", res.StatusCode, res.Header)
 		}

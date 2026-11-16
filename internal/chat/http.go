@@ -23,8 +23,8 @@ const maxBody = 64 << 10
 type CORS interface {
 	// Wrap sets the CORS headers of an actual request.
 	Wrap(next http.Handler) http.Handler
-	// Preflight answers OPTIONS for a route with method.
-	Preflight(method string) http.Handler
+	// Preflight answers OPTIONS for a route with methods.
+	Preflight(methods ...string) http.Handler
 }
 
 // Register adds the chat routes to mux. Both checks wrap auth.Middleware.
@@ -38,20 +38,27 @@ func (h *Handler) Register(mux *http.ServeMux, chatAuthn, userAuthn func(http.Ha
 		method, path string
 		fn           http.HandlerFunc
 	}{
+		{http.MethodGet, "/v1/conversations", h.list},
 		{http.MethodPost, "/v1/conversations", h.create},
 		{http.MethodGet, "/v1/conversations/{id}", h.get},
 		{http.MethodPost, "/v1/conversations/{id}/messages", h.send},
 	}
+	// One OPTIONS handler per path with every method of that path, in any order.
+	methods := map[string][]string{}
 	for _, rt := range widget {
 		mux.Handle(rt.method+" "+rt.path, c.Wrap(chatAuthn(rt.fn)))
-		mux.Handle(http.MethodOptions+" "+rt.path, c.Preflight(rt.method))
+		methods[rt.path] = append(methods[rt.path], rt.method)
+	}
+	for path, ms := range methods {
+		mux.Handle(http.MethodOptions+" "+path, c.Preflight(ms...))
 	}
 	mux.Handle("GET /v1/me/export", userAuthn(http.HandlerFunc(h.exportMe)))
 }
 
 // owner returns the principal's owner and checks the widget origin claim (#30).
 // Owner = token org and sub: AI settings and the org quota apply per org, the user
-// quota per sub, for a widget token too.
+// quota per sub, for a widget token too. A widget token also sets Owner.Origin: its
+// conversations stay bound to that origin (#54).
 // It writes the refusal and returns ok false.
 func owner(w http.ResponseWriter, r *http.Request) (*auth.Principal, store.Owner, bool) {
 	p, ok := auth.FromContext(r.Context())
@@ -61,13 +68,16 @@ func owner(w http.ResponseWriter, r *http.Request) (*auth.Principal, store.Owner
 		problem.Write(w, r, http.StatusUnauthorized, auth.CodeUnauthenticated, "", 0)
 		return nil, store.Owner{}, false
 	}
+	o := store.Owner{Tenant: p.OrgID, User: p.Subject}
 	if origin, has := p.Raw[auth.ClaimOrigin]; has {
-		if s, _ := origin.(string); s == "" || s != r.Header.Get("Origin") {
+		s, _ := origin.(string)
+		if s == "" || s != r.Header.Get("Origin") {
 			problem.Write(w, r, http.StatusForbidden, problem.CodeForbidden, "", 0)
 			return nil, store.Owner{}, false
 		}
+		o.Origin = s
 	}
-	return p, store.Owner{Tenant: p.OrgID, User: p.Subject}, true
+	return p, o, true
 }
 
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {

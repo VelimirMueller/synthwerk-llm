@@ -40,7 +40,9 @@ func (s *ownerStore) seen(o store.Owner) {
 func (s *ownerStore) mine(o store.Owner) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.owner != nil && *s.owner == o
+	// Like the store: same org and user; a widget origin sees only its own origin (#54).
+	return s.owner != nil && s.owner.Tenant == o.Tenant && s.owner.User == o.User &&
+		(o.Origin == "" || o.Origin == s.owner.Origin)
 }
 
 func (s *ownerStore) CreateConversation(_ context.Context, o store.Owner, alias string) (store.Conversation, error) {
@@ -102,7 +104,8 @@ func TestWidgetTokenChatsFromItsOrigin(t *testing.T) {
 		t.Fatalf("send: status %d, events %v", res.StatusCode, harness.Names(evs))
 	}
 
-	want := store.Owner{Tenant: "org-1", User: "user-w"}
+	// The widget origin travels with the owner: its conversations stay bound to it (#54).
+	want := store.Owner{Tenant: "org-1", User: "user-w", Origin: shop}
 	st.mu.Lock()
 	owners, limits := st.owners, st.limits
 	st.mu.Unlock()

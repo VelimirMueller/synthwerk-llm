@@ -29,6 +29,10 @@ var ErrNotFound = errors.New("store: not found")
 type Owner struct {
 	Tenant string
 	User   string
+	// Origin is the synthwerk:origin claim of a widget token, "" for a user token
+	// (synthwerk#54). A create stores it on the conversation. With Origin set, list,
+	// read and send see only the conversations of that origin; "" sees every origin.
+	Origin string
 }
 
 // Message statuses (contract MessageStatus).
@@ -116,6 +120,10 @@ func (s *Store) withOwner(ctx context.Context, o Owner, fn func(pgx.Tx) error) e
 	return nil
 }
 
+// originMatch limits a conversation query to Owner.Origin ($4). "" (user token)
+// matches every origin; a widget origin matches only its own conversations (#54).
+const originMatch = ` AND ($4 = '' OR origin = $4)`
+
 func newID() (string, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -133,8 +141,8 @@ func (s *Store) CreateConversation(ctx context.Context, o Owner, alias string) (
 	c := Conversation{ID: id, ModelAlias: alias, Messages: []Message{}}
 	err = s.withOwner(ctx, o, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
-			`INSERT INTO llm.conversation (id, tenant_id, owner_id, model_alias) VALUES ($1, $2, $3, $4) RETURNING created_at`,
-			id, o.Tenant, o.User, alias).Scan(&c.CreatedAt)
+			`INSERT INTO llm.conversation (id, tenant_id, owner_id, model_alias, origin) VALUES ($1, $2, $3, $4, $5) RETURNING created_at`,
+			id, o.Tenant, o.User, alias, o.Origin).Scan(&c.CreatedAt)
 	})
 	if err != nil {
 		return Conversation{}, fmt.Errorf("store: create conversation: %w", err)
@@ -147,8 +155,8 @@ func (s *Store) ConversationAlias(ctx context.Context, o Owner, id string) (stri
 	var alias string
 	err := s.withOwner(ctx, o, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
-			`SELECT model_alias FROM llm.conversation WHERE id = $1 AND tenant_id = $2 AND owner_id = $3 AND deleted_at IS NULL`,
-			id, o.Tenant, o.User).Scan(&alias)
+			`SELECT model_alias FROM llm.conversation WHERE id = $1 AND tenant_id = $2 AND owner_id = $3 AND deleted_at IS NULL`+originMatch,
+			id, o.Tenant, o.User, o.Origin).Scan(&alias)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNotFound
@@ -164,8 +172,8 @@ func (s *Store) GetConversation(ctx context.Context, o Owner, id string) (Conver
 	c := Conversation{ID: id}
 	err := s.withOwner(ctx, o, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx,
-			`SELECT model_alias, created_at FROM llm.conversation WHERE id = $1 AND tenant_id = $2 AND owner_id = $3 AND deleted_at IS NULL`,
-			id, o.Tenant, o.User).Scan(&c.ModelAlias, &c.CreatedAt); err != nil {
+			`SELECT model_alias, created_at FROM llm.conversation WHERE id = $1 AND tenant_id = $2 AND owner_id = $3 AND deleted_at IS NULL`+originMatch,
+			id, o.Tenant, o.User, o.Origin).Scan(&c.ModelAlias, &c.CreatedAt); err != nil {
 			return err
 		}
 		var err error
@@ -219,8 +227,8 @@ func (s *Store) StartTurn(ctx context.Context, o Owner, convID, text string, q Q
 	err = s.withOwner(ctx, o, func(tx pgx.Tx) error {
 		var one int
 		if err := tx.QueryRow(ctx,
-			`SELECT 1 FROM llm.conversation WHERE id = $1 AND tenant_id = $2 AND owner_id = $3 AND deleted_at IS NULL FOR UPDATE`,
-			convID, o.Tenant, o.User).Scan(&one); err != nil {
+			`SELECT 1 FROM llm.conversation WHERE id = $1 AND tenant_id = $2 AND owner_id = $3 AND deleted_at IS NULL`+originMatch+` FOR UPDATE`,
+			convID, o.Tenant, o.User, o.Origin).Scan(&one); err != nil {
 			return err
 		}
 		var err error

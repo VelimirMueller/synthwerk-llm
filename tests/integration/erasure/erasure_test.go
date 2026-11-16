@@ -291,6 +291,14 @@ func TestEraseUserRemovesOwnRowsInAllOrgs(t *testing.T) {
 	if c := r.count(t, "user-b", ""); c != peerBefore {
 		t.Fatal("the repeat touched the peer")
 	}
+	// The past conversations list of the erased user is empty in every org (#54).
+	for _, org := range []string{"org-1", "org-2"} {
+		res := r.Do(t, http.MethodGet, "/v1/conversations", r.Token(t, "user-a", org), nil)
+		var page llm.ConversationPage
+		if err := json.NewDecoder(res.Body).Decode(&page); err != nil || res.StatusCode != http.StatusOK || len(page.Items) != 0 {
+			t.Fatalf("%s: list after erase %d %+v %v", org, res.StatusCode, page.Items, err)
+		}
+	}
 	// The peer still works: read and send in org-1.
 	r.chat(t, "user-b", "org-1")
 }
