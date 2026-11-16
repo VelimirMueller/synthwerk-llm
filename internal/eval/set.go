@@ -43,7 +43,21 @@ type Case struct {
 	Messages  []Turn  `json:"messages"`
 	MaxTokens int     `json:"max_tokens,omitempty"`
 	Checks    []Check `json:"checks"`
+	// Attack is set in the AI tools set only (evals/tools, #53): the tool calls a
+	// scripted hostile model makes. The runner of that set answers with every tool
+	// result word for word, so a leak in a tool shows up in the answer.
+	Attack []Attack `json:"attack,omitempty"`
 }
+
+// Attack is one tool call of the hostile model. Arguments is any JSON value, the
+// way a model could send it.
+type Attack struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+}
+
+// MaxAttack bounds the tool calls of one case.
+const MaxAttack = 8
 
 // Manifest pins the case file.
 type Manifest struct {
@@ -184,6 +198,17 @@ func (c *Case) validate() error {
 	}
 	if len(c.Checks) == 0 {
 		return errors.New("no checks")
+	}
+	if len(c.Attack) > MaxAttack {
+		return fmt.Errorf("more than %d attack calls", MaxAttack)
+	}
+	for _, a := range c.Attack {
+		if strings.TrimSpace(a.Name) == "" {
+			return errors.New("an attack call has no name")
+		}
+		if len(a.Arguments) > 0 && !json.Valid(a.Arguments) {
+			return errors.New("attack arguments are not JSON")
+		}
 	}
 	for i := range c.Checks {
 		if err := c.Checks[i].compile(); err != nil {

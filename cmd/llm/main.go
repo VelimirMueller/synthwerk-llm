@@ -73,6 +73,7 @@ import (
 	"github.com/VelimirMueller/synthwerk-llm/internal/provider/registry"
 	"github.com/VelimirMueller/synthwerk-llm/internal/quota"
 	"github.com/VelimirMueller/synthwerk-llm/internal/store"
+	"github.com/VelimirMueller/synthwerk-llm/internal/tools"
 )
 
 // Set by -ldflags at build time.
@@ -216,6 +217,7 @@ func run(ctx context.Context) error {
 	// AI settings (#39): identity checks the membership and gives the plan.
 	// CORS of the widget chat routes (infra#21): identity says which origins apps list.
 	var plans aisettings.Plans
+	var members tools.Members
 	corsCfg := cors.Config{Static: cfg.CORSOrigins, Log: logger}
 	if cfg.IdentityURL != "" {
 		ic, err := identity.New(cfg.IdentityURL)
@@ -223,12 +225,19 @@ func run(ctx context.Context) error {
 			return err
 		}
 		plans = ic
+		members = ic
 		corsCfg.Lookup = ic
 	} else {
 		logger.WarnContext(ctx, "AI settings routes answer 503 and widget CORS uses the static list only: identity is not configured",
 			slog.String("event.name", "llm.settings.not_configured"))
 	}
 	settingsHandler := aisettings.New(chatHandler.Service(), st, plans, source, logger)
+
+	// AI tools (#53): read-only, scope from the token. Admin tools need identity.
+	if cfg.Tools {
+		chatHandler.WithTools(tools.New(st, members, source, logger))
+		logger.InfoContext(ctx, "AI tools on", slog.String("event.name", "llm.tools.enabled"))
+	}
 
 	// Identity owns EVT_IDENTITY: the consumer waits for it and never creates it.
 	eraser := erasure.New(js, st, logger, erasure.Config{})

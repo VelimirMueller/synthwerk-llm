@@ -27,6 +27,7 @@ import (
 	"github.com/VelimirMueller/synthwerk-llm/internal/quota"
 	"github.com/VelimirMueller/synthwerk-llm/internal/settings"
 	"github.com/VelimirMueller/synthwerk-llm/internal/store"
+	"github.com/VelimirMueller/synthwerk-llm/internal/tools"
 )
 
 // EventType is the fact the gateway sends for every finished answer.
@@ -86,6 +87,15 @@ type Handler struct {
 	slots chan struct{}
 	mu    sync.Mutex
 	open  map[store.Owner]int
+	// tools runs the AI tools of a send (#53). Nil: plain chat.
+	tools *tools.Registry
+}
+
+// WithTools turns the read-only AI tools on for every send (#53). Call it before
+// the handler serves.
+func (h *Handler) WithTools(r *tools.Registry) *Handler {
+	h.tools = r
+	return h
 }
 
 // New returns the handler. limits nil: quota.None (usage counted, no limit).

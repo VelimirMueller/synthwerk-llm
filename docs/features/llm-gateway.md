@@ -6,12 +6,12 @@ epic: E3
 owner: llm
 paths: ["internal/**", "cmd/**", "migrations/**"]
 api: ["GET /v1/conversations", "POST /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/messages", "OPTIONS /v1/conversations", "OPTIONS /v1/conversations/{id}", "OPTIONS /v1/conversations/{id}/messages", "GET /v1/me/export", "GET /v1/ai-settings", "PUT /v1/ai-settings"]
-events: ["dev.synthwerk.llm.message.completed.v1", "dev.synthwerk.llm.ai_settings.changed.v1"]
-mcp: []
+events: ["dev.synthwerk.llm.message.completed.v1", "dev.synthwerk.llm.ai_settings.changed.v1", "dev.synthwerk.llm.toolcall.executed.v3"]
+mcp: ["llm_list_conversations", "llm_get_my_quota", "llm_get_org_usage"]
 updated: 2026-11-16
 ---
 
-# LLM gateway (chat slice, M2 #32; quotas #33; own data #41; AI settings #39; widget tokens #30; widget CORS infra#21; fallback provider #56; past conversations #54)
+# LLM gateway (chat slice, M2 #32; quotas #33; own data #41; AI settings #39; widget tokens #30; widget CORS infra#21; fallback provider #56; past conversations #54; AI tools #53)
 
 > - A signed-in user creates a conversation, sends a message and gets the answer token by token as Server-Sent Events.
 > - The model comes from `SYNTHWERK_LLM_PROVIDER` (`ollama`, `openai_compat`, `fake`). An operator can add fallback providers per alias (`SYNTHWERK_LLM_FALLBACKS`, #56). The gateway falls over only before the first token, and never to a non-EU provider without `SYNTHWERK_LLM_ALLOW_NON_EU=true`.
@@ -63,6 +63,30 @@ After the first byte the status stays 200; a failure is an `error` event. A clie
 - Stream slots still count per org and `sub`, over all origins.
 - Account delete: the `user.deleted.v1` erase removes the conversations, so the list is empty after it. An org delete comes in the same event (`deleted_orgs`).
 - The list is a widget route: llm answers its CORS. `OPTIONS /v1/conversations` serves both `GET` and `POST`.
+
+## AI tools (#53)
+
+- The model can call three read-only tools during a chat. `SYNTHWERK_LLM_TOOLS=true` turns them on. The default is `false`.
+- The tool set is small on purpose:
+
+| Tool | Who | Result |
+|---|---|---|
+| `llm_list_conversations` | every caller | Titles and dates of the caller's own last 20 conversations in the token org. |
+| `llm_get_my_quota` | every caller | The caller's own token use and limit of the current UTC day. |
+| `llm_get_org_usage` | org `owner` or `admin`, user token only | The token use and limit of the whole org of the current UTC day. |
+
+- Scope comes from the verified token only. No tool takes an argument. So a prompt cannot name another user or org.
+- The gateway refuses every argument other than an empty object. The model gets a JSON error. The call reads nothing.
+- User tools read with the same owner as the chat. Row level security applies, as in [Past conversations](#past-conversations-54).
+- A widget token never gets the admin tool. A widget call of it is refused before identity is asked.
+- An admin tool call checks the token role, then the membership in identity (`GET /v1/me/entitlements`).
+- Each admin tool call with an identity org writes the fact `dev.synthwerk.llm.toolcall.executed.v3` to the outbox. Allowed and refused calls both write it.
+- Identity lists the fact in the org audit list. `orgid` and `data.org_id` are the identity org id. `subject` is the conversation id.
+- When identity refuses the caller or is down, there is no identity org id. Then no fact is written, and the log has the call.
+- Bounds: 3 model rounds per answer, 4 tool calls per round. The last round gets no tools. The adapter reads at most 8 calls and 16 KiB of arguments.
+- Tool results go to the model only. They never go to the client, the stored answer, the logs or the fact.
+- The usage of all rounds counts against the quota. The `completed` fact names the provider of the last round.
+- The tools run in the gateway process. A separate MCP server endpoint is not in this slice.
 
 ## Widget tokens (#30)
 
@@ -200,11 +224,13 @@ Consumed: `dev.synthwerk.identity.user.deleted.v1` on `evt.identity.user.deleted
 
 Produced: `dev.synthwerk.llm.ai_settings.changed.v1` (see [AI settings](#ai-settings-39)).
 
+Produced: `dev.synthwerk.llm.toolcall.executed.v3` on `evt.llm.toolcall.executed.v3`, one per admin tool call (see [AI tools](#ai-tools-53)). Data: tool, scope `org`, identity org id, conversation id, outcome, duration. No arguments, no results.
+
 Produced: `dev.synthwerk.llm.message.completed.v1` on `evt.llm.message.completed.v1`, stream `EVT_LLM` (`evt.llm.>`, created or updated by the service at start). Written in the same transaction as the final message (kit outbox), for `completed`, `failed` and `canceled`. `subject` = message id, `orgid` = org, `actor` = `user:<sub>`. Data: ids, model alias, provider (the one that answered, #56), token counts, latency, time to first token, status.
 
 ## Config
 
-`SYNTHWERK_LLM_*` (see `cmd/llm/main.go` and `internal/config`): `PROVIDER`, `BASE_URL`, `API_KEY[_FILE]`, `MODEL_ALIASES` (`default=qwen3.5:4b`; the alias `default` must exist), `SYSTEM_PROMPT`, `MAX_INPUT_CHARS` (8000), `MAX_STREAMS_PER_OWNER` (2), `MAX_CONTEXT_CHARS` (24000), `STREAM_TIMEOUT` (120s), `PROVIDER_CONCURRENCY` (1), `QUEUE_TIMEOUT` (10s), `FAKE_DELAY` (0s), `QUOTA_USER_TOKENS` (50000 per UTC day, 0 = no limit), `QUOTA_ORG_TOKENS` (500000, 0 = no limit), `QUOTA_RESERVE_TOKENS` (1024; a non-zero limit must be above it), `OIDC_ISSUER`, `OIDC_AUDIENCE`, `JWKS_URL`, `WIDGET_ISSUER` (iss of identity widget tokens; empty = refused), `WIDGET_AUDIENCE` (`synthwerk-api`), `WIDGET_JWKS_URL` (default `<WIDGET_ISSUER>/.well-known/jwks.json`; set the internal URL in compose), `IDENTITY_URL` (identity base URL for the AI settings and the widget origin lookup; empty = `/v1/ai-settings` answers 503 and widget CORS uses the static list only), `CORS_ORIGINS` (comma list of first-party origins for the widget chat routes, for example `http://localhost:3000`; empty by default; an invalid item stops the start), `DATABASE_URL`, `NATS_URL`, `HTTP_ADDR`.
+`SYNTHWERK_LLM_*` (see `cmd/llm/main.go` and `internal/config`): `PROVIDER`, `BASE_URL`, `API_KEY[_FILE]`, `MODEL_ALIASES` (`default=qwen3.5:4b`; the alias `default` must exist), `SYSTEM_PROMPT`, `MAX_INPUT_CHARS` (8000), `MAX_STREAMS_PER_OWNER` (2), `MAX_CONTEXT_CHARS` (24000), `STREAM_TIMEOUT` (120s), `PROVIDER_CONCURRENCY` (1), `QUEUE_TIMEOUT` (10s), `FAKE_DELAY` (0s), `QUOTA_USER_TOKENS` (50000 per UTC day, 0 = no limit), `QUOTA_ORG_TOKENS` (500000, 0 = no limit), `QUOTA_RESERVE_TOKENS` (1024; a non-zero limit must be above it), `OIDC_ISSUER`, `OIDC_AUDIENCE`, `JWKS_URL`, `WIDGET_ISSUER` (iss of identity widget tokens; empty = refused), `WIDGET_AUDIENCE` (`synthwerk-api`), `WIDGET_JWKS_URL` (default `<WIDGET_ISSUER>/.well-known/jwks.json`; set the internal URL in compose), `IDENTITY_URL` (identity base URL for the AI settings and the widget origin lookup; empty = `/v1/ai-settings` answers 503 and widget CORS uses the static list only), `TOOLS` (`false`; `true` turns the AI tools on, see [AI tools](#ai-tools-53)), `CORS_ORIGINS` (comma list of first-party origins for the widget chat routes, for example `http://localhost:3000`; empty by default; an invalid item stops the start), `DATABASE_URL`, `NATS_URL`, `HTTP_ADDR`.
 
 Fallback chain (#56): `REGION` of the primary (`eu` or `non_eu`; default `eu` for `ollama` and `fake`, required for `openai_compat`), `FALLBACKS` (names in order, `a-z0-9_`; empty = none), per name `FALLBACK_<NAME>_PROVIDER`, `_BASE_URL` (required), `_API_KEY[_FILE]`, `_REGION` (required), `_MODEL_ALIASES` (`alias=model`, aliases of `MODEL_ALIASES` only), `ALLOW_NON_EU` (`false`), `FIRST_TOKEN_TIMEOUT` (30s), `BREAKER_FAILURES` (3), `BREAKER_OPEN` (30s). Example: `FALLBACKS=backup`, `FALLBACK_BACKUP_PROVIDER=openai_compat`, `FALLBACK_BACKUP_BASE_URL=https://…/v1`, `FALLBACK_BACKUP_REGION=eu`, `FALLBACK_BACKUP_MODEL_ALIASES=default=<model>`.
 
@@ -230,7 +256,10 @@ Fallback chain (#56): `REGION` of the primary (`eu` or `non_eu`; default `eu` fo
 - `tests/unit/chat/list_test.go` (#54) — `Title - <shape>`; `List - <bad limit or cursor> - 400 invalid_request`; `List - no token - 401`; `List - widget token, Origin header of another site - 403`.
 - `tests/integration/chat/list_test.go` (#54) — `List - two users and the same sub in another org - each sees only the own conversations of the token org, newest first, paged; empty and deleted ones are left out; a second user cannot open the first user's conversation`; `List, Get, Send - widget token of origin A - never sees a conversation made on origin B or with a user token; the user token sees every origin`.
 - `tests/integration/erasure` — `EraseUser` also leaves an empty past conversations list in every org (#54).
-- `tests/contract/provider` — conformance of `fake` and `openaicompat`.
+- `tests/contract/provider` — conformance of `fake` and `openaicompat`. `openaicompat` tool calls (#53): tools and tool turns in the request, streamed pieces merged by index, calls decide the finish; too many calls or too long arguments break the stream.
+- `tests/unit/tools` (#53) — `For - member, admin - admin tool for admins only`; `Call - user tool - reads the token owner; any argument refused; unknown tool refused; no fact`; `Call - admin tool - admin ok, admin with arguments, member, identity refuses, identity down, widget, no identity - outcome and fact as listed`; `Chat - model asks for tools forever - 3 rounds, last without tools, 4 calls per round, usage summed`.
+- `tests/unit/eval/tools_test.go` and `evals/tools/v1` (#53) — prompt-injection eval: a scripted hostile model calls the tools with injected arguments, then repeats every result. No case may show another user's or org's data. A leaking store fails the gate.
+- `tests/integration/chat/tools_test.go` (#53) — `Send with tools - prompt asks for another user's data - nothing of the victim in the answer or logs; the member's admin call is refused and audited`; `Send with tools - org admin calls the org usage tool - one v3 fact in the outbox`; `Send with tools - identity refuses, widget chat - refused, no fact`.
 - `tests/unit/chain` (#56) — `Chat - primary fails before the first token (503, 429, unavailable, broken stream) - the next link answers, in order, with its own model`; `Chat - fails after the first token - no fallback`; `Chat - 400 - no fallback, circuit unchanged`; `Chat - no first token in time - next link; the last link waits`; `Chat - client abort - no fallback`; `Chat - alias the fallback does not serve - primary only`; `Breaker - open skips, half-open lets one probe, success closes, failed probe opens again, last link always tried`; `New - non-EU link without the opt-in - refused`. Over HTTP with `openaicompat`: connection refused, 503, 429, headers without a token → the fallback's answer and usage; connection drop after the first token → no fallback; all down → last error.
 - `tests/integration/chat/fallback_test.go` (#56) — `Send - primary blocked (503) - the fallback streams; event, logs and quota name it`; `Send - fails after the first token - error event, no fallback`; `Send - every provider down - 503, nothing charged`.
 - `tests/unit/config`, `tests/unit/sse`, `tests/unit/quota` (UTC window, `Retry-After` range, error matching).
@@ -250,3 +279,4 @@ Entitlement-based limits (#31, the `quota.Source` seam is ready), a `GET` of the
 | 2026-10-30 | CORS origin lookups: at most 8 in flight, a busy slot denies at once without a call (security review, infra#24). |
 | 2026-10-30 | Fallback provider (synthwerk#56): ordered chain per alias, fall-over before the first token only, circuit breaker per provider, `eu`/`non_eu` region with `ALLOW_NON_EU` opt-in, metrics and logs per provider and reason. New env: `REGION`, `FALLBACKS`, `FALLBACK_<NAME>_*`, `ALLOW_NON_EU`, `FIRST_TOKEN_TIMEOUT`, `BREAKER_FAILURES`, `BREAKER_OPEN`. |
 | 2026-11-16 | Past conversations (synthwerk#54): `GET /v1/conversations` with cursor paging, migration `0006_conversation_origin.sql`, widget tokens bound to their `synthwerk:origin` on list, read and send. `OPTIONS /v1/conversations` serves `GET` and `POST`. Contracts `go` at the #54 commit (contracts PR #42); bump to the tag once released. |
+| 2026-11-16 | AI tools (synthwerk#53): `llm_list_conversations`, `llm_get_my_quota`, `llm_get_org_usage` in the chat, off by default (`SYNTHWERK_LLM_TOOLS`). Admin calls write `toolcall.executed.v3`. Prompt-injection eval `evals/tools/v1`. Contracts `go` at the #53 commit (contracts PR #44). |

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/VelimirMueller/synthwerk-llm/internal/settings"
 	"github.com/VelimirMueller/synthwerk-llm/internal/sse"
 	"github.com/VelimirMueller/synthwerk-llm/internal/store"
+	"github.com/VelimirMueller/synthwerk-llm/internal/tools"
 )
 
 // finishTimeout bounds the final write after the stream, also after a client abort.
@@ -157,8 +159,24 @@ func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 		inputEstimate = provider.EstimateInput(msgs)
 	}
 
-	ans := h.stream(w, r, turn, provider.Request{Model: model, Alias: alias, Messages: msgs, Options: provider.Options{Temperature: ap.Temperature}}, alias)
+	scope := tools.Scope{
+		Owner:          o,
+		Admin:          o.Origin == "" && (p.HasRole(auth.RoleOwner) || p.HasRole(auth.RoleAdmin)),
+		Bearer:         bearer(r),
+		ConversationID: convID,
+		Limits:         limits,
+	}
+	ans := h.stream(w, r, turn, provider.Request{Model: model, Alias: alias, Messages: msgs, Options: provider.Options{Temperature: ap.Temperature}}, alias, scope)
 	h.finish(r.Context(), p, o, convID, turn.AssistantMessageID, alias, start, ans, inputEstimate)
+}
+
+// bearer is the caller's token from the Authorization header ("" when missing).
+func bearer(r *http.Request) string {
+	b, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return ""
+	}
+	return b
 }
 
 // charge is what an answer costs the quota. A completed answer costs the counts of
@@ -178,7 +196,7 @@ func charge(ans answer, inputEstimate int) int64 {
 
 // stream runs the model call and writes the SSE answer. It never returns an error:
 // the outcome is in the answer status.
-func (h *Handler) stream(w http.ResponseWriter, r *http.Request, turn store.Turn, req provider.Request, alias string) (ans answer) {
+func (h *Handler) stream(w http.ResponseWriter, r *http.Request, turn store.Turn, req provider.Request, alias string, scope tools.Scope) (ans answer) {
 	ans = answer{status: store.StatusFailed}
 	releaseModel, ok := h.acquireModel(r.Context())
 	if !ok {
@@ -194,7 +212,15 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, turn store.Turn
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.StreamTimeout)
 	defer cancel()
 	callStart := time.Now()
-	st, err := h.provider.Chat(ctx, req)
+	var st provider.Stream
+	var err error
+	if h.tools != nil {
+		// The scope comes from the token: the model can ask for a tool, never for
+		// another user's or org's data (#53).
+		st, err = h.tools.Chat(ctx, h.provider, req, scope)
+	} else {
+		st, err = h.provider.Chat(ctx, req)
+	}
 	if err != nil {
 		if r.Context().Err() != nil {
 			ans.status = store.StatusCanceled

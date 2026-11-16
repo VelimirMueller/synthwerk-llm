@@ -36,6 +36,9 @@ type Provider struct {
 	FailAfter int
 	// NoUsage: the stream reports estimated usage, like a provider without numbers.
 	NoUsage bool
+	// Tools returns the tool calls the model asks for (#53). A non-empty answer ends
+	// the stream without text, with Finish tool_calls. Nil or empty: Reply answers.
+	Tools func(req provider.Request) []provider.ToolCall
 
 	calls atomic.Int64
 	mu    sync.Mutex
@@ -73,6 +76,11 @@ func (p *Provider) Chat(ctx context.Context, req provider.Request) (provider.Str
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if p.Tools != nil {
+		if calls := p.Tools(req); len(calls) > 0 {
+			return &stream{ctx: ctx, p: p, calls: calls, input: provider.EstimateInput(req.Messages)}, nil
+		}
+	}
 	pieces := Echo(req)
 	if p.Reply != nil {
 		pieces = p.Reply(req)
@@ -106,6 +114,7 @@ type stream struct {
 	next   int
 	out    int
 	input  int
+	calls  []provider.ToolCall
 }
 
 func (s *stream) Next() (string, error) {
@@ -136,10 +145,14 @@ func (s *stream) Next() (string, error) {
 }
 
 func (s *stream) Result() provider.Result {
-	return provider.Result{
+	r := provider.Result{
 		Usage:  provider.Usage{InputTokens: s.input, OutputTokens: s.out, Estimated: s.p.NoUsage},
 		Finish: provider.FinishStop,
 	}
+	if len(s.calls) > 0 {
+		r.Finish, r.ToolCalls = provider.FinishToolCalls, append([]provider.ToolCall(nil), s.calls...)
+	}
+	return r
 }
 
 func (*stream) Close() error { return nil }

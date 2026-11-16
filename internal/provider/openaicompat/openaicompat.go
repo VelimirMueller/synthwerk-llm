@@ -77,9 +77,35 @@ func New(cfg Config) (*Provider, error) {
 func (p *Provider) Name() string { return p.name }
 
 type wireMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string         `json:"role"`
+	Content    string         `json:"content"`
+	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
 }
+
+type wireToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+type wireTool struct {
+	Type     string `json:"type"`
+	Function struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description,omitempty"`
+		Parameters  json.RawMessage `json:"parameters"`
+	} `json:"function"`
+}
+
+// Bounds of the tool calls of one answer (#53): model output is untrusted.
+const (
+	maxToolCalls    = 8
+	maxToolArgBytes = 16 << 10
+)
 
 type wireRequest struct {
 	Model         string        `json:"model"`
@@ -94,12 +120,22 @@ type wireRequest struct {
 	// ReasoningEffort "none" turns the thinking trace off on Ollama (qwen3.5). Checked
 	// with Ollama: "think": false is ignored on the OpenAI endpoint.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// Tools (#53): function tools. Omitted for a plain chat call.
+	Tools []wireTool `json:"tools,omitempty"`
 }
 
 type wireChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content string `json:"content"`
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				Index    int    `json:"index"`
+				ID       string `json:"id"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -118,7 +154,20 @@ func (p *Provider) Chat(ctx context.Context, req provider.Request) (provider.Str
 		body.ReasoningEffort = "none"
 	}
 	for i, m := range req.Messages {
-		body.Messages[i] = wireMessage{Role: string(m.Role), Content: m.Text}
+		wm := wireMessage{Role: string(m.Role), Content: m.Text, ToolCallID: m.ToolCallID}
+		for _, c := range m.ToolCalls {
+			var wc wireToolCall
+			wc.ID, wc.Type = c.ID, "function"
+			wc.Function.Name, wc.Function.Arguments = c.Name, c.Arguments
+			wm.ToolCalls = append(wm.ToolCalls, wc)
+		}
+		body.Messages[i] = wm
+	}
+	for _, t := range req.Tools {
+		var wt wireTool
+		wt.Type = "function"
+		wt.Function.Name, wt.Function.Description, wt.Function.Parameters = t.Name, t.Description, t.Parameters
+		body.Tools = append(body.Tools, wt)
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -166,6 +215,8 @@ type stream struct {
 	usage    *provider.Usage
 	finish   provider.FinishReason
 	closed   bool
+	// calls collects the streamed tool calls by index (#53).
+	calls []provider.ToolCall
 }
 
 func (s *stream) Next() (string, error) {
@@ -211,14 +262,52 @@ func (s *stream) Next() (string, error) {
 				s.pending = append(s.pending, ch.Delta.Content)
 				s.outChars.WriteString(ch.Delta.Content)
 			}
+			for _, tc := range ch.Delta.ToolCalls {
+				if err := s.addToolCall(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments); err != nil {
+					return "", err
+				}
+			}
 			if ch.FinishReason != nil && *ch.FinishReason != "" {
-				s.finish = provider.FinishStop
-				if *ch.FinishReason == "length" {
+				switch *ch.FinishReason {
+				case "length":
 					s.finish = provider.FinishLength
+				case "tool_calls":
+					s.finish = provider.FinishToolCalls
+				default:
+					s.finish = provider.FinishStop
 				}
 			}
 		}
 	}
+}
+
+// addToolCall merges one streamed tool call piece: the first piece of an index has
+// the id and the name, later pieces add argument text. A piece with a new id on a
+// used index is a new call: some servers send every call whole with index 0.
+func (s *stream) addToolCall(index int, id, name, args string) error {
+	if index >= 0 && index < len(s.calls) && id != "" && s.calls[index].ID != "" && s.calls[index].ID != id {
+		index = len(s.calls)
+	}
+	if index < 0 || index >= maxToolCalls {
+		return fmt.Errorf("%w: tool call index out of range", ErrStream)
+	}
+	for len(s.calls) <= index {
+		s.calls = append(s.calls, provider.ToolCall{})
+	}
+	c := &s.calls[index]
+	if id != "" {
+		c.ID = id
+	}
+	if name != "" {
+		c.Name = name
+	}
+	if len(c.Arguments)+len(args) > maxToolArgBytes {
+		return fmt.Errorf("%w: tool call arguments too long", ErrStream)
+	}
+	c.Arguments += args
+	s.outChars.WriteString(name)
+	s.outChars.WriteString(args)
+	return nil
 }
 
 // cause keeps the context errors and hides the rest behind a fixed text.
@@ -233,6 +322,11 @@ func (s *stream) Result() provider.Result {
 	r := provider.Result{Finish: s.finish}
 	if r.Finish == "" {
 		r.Finish = provider.FinishStop
+	}
+	// Some servers end a tool call answer with "stop": the calls decide.
+	if len(s.calls) > 0 {
+		r.Finish = provider.FinishToolCalls
+		r.ToolCalls = append([]provider.ToolCall(nil), s.calls...)
 	}
 	if s.usage != nil {
 		r.Usage = *s.usage

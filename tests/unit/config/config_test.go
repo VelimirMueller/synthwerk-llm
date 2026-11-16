@@ -232,3 +232,16 @@ func TestLoadFallbacksRefuse(t *testing.T) {
 		})
 	}
 }
+
+// Load - AI tools (#53): off by default; true or false only.
+func TestLoadTools(t *testing.T) {
+	if c, err := config.Load(envOf(nil)); err != nil || c.Tools {
+		t.Fatalf("default: %v err %v", c.Tools, err)
+	}
+	if c, err := config.Load(envOf(map[string]string{"SYNTHWERK_LLM_TOOLS": "true"})); err != nil || !c.Tools {
+		t.Fatalf("on: %v err %v", c.Tools, err)
+	}
+	if _, err := config.Load(envOf(map[string]string{"SYNTHWERK_LLM_TOOLS": "maybe"})); err == nil || !strings.Contains(err.Error(), "TOOLS must be true or false") {
+		t.Fatalf("err %v", err)
+	}
+}

@@ -138,6 +138,9 @@ type Config struct {
 	// IdentityURL is the identity base URL as llm reaches it (#39). The AI settings
 	// routes ask identity for the membership and the plan. Empty: they answer 503.
 	IdentityURL string
+	// Tools turns the read-only AI tools of the chat on (TOOLS, synthwerk#53).
+	// Default false: the provider must support tool calls (Ollama with qwen3.5 does).
+	Tools bool
 	// CORSOrigins are the canonical origins of first-party apps that may call the
 	// widget chat routes from a browser (infra#21). Identity answers for the
 	// customer origins. Empty: identity only.
@@ -291,6 +294,11 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	c.JWKSURL = get("JWKS_URL", "")
 	errs = append(errs, c.loadWidget(get)...)
+	if v, err := strconv.ParseBool(get("TOOLS", "false")); err != nil {
+		errs = append(errs, fmt.Errorf("%s must be true or false", env.Key(Service, "TOOLS")))
+	} else {
+		c.Tools = v
+	}
 	c.IdentityURL = get("IDENTITY_URL", "")
 	if c.IdentityURL != "" {
 		u, err := url.Parse(c.IdentityURL)
