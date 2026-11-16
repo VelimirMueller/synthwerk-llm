@@ -26,6 +26,7 @@
 //	SYNTHWERK_LLM_WIDGET_ISSUER    iss of identity widget tokens (#30); empty = widget tokens refused
 //	SYNTHWERK_LLM_WIDGET_AUDIENCE  accepted widget audiences, comma list, default synthwerk-api
 //	SYNTHWERK_LLM_WIDGET_JWKS_URL  widget key set URL, default <widget issuer>/.well-known/jwks.json
+//	SYNTHWERK_LLM_WIDGET_FRAME_ORIGINS  origins of the widget chat iframe (widgets#33), comma list; a widget token passes from them too
 //	SYNTHWERK_LLM_IDENTITY_URL     identity base URL for the AI settings (#39); empty = /v1/ai-settings answers 503
 //	SYNTHWERK_LLM_QUOTA_USER_TOKENS  tokens per UTC day per user in an org, default 50000 (0 = no limit)
 //	SYNTHWERK_LLM_QUOTA_ORG_TOKENS   tokens per UTC day per org, default 500000 (0 = no limit)
@@ -212,6 +213,7 @@ func run(ctx context.Context) error {
 		QueueTimeout:        cfg.QueueTimeout,
 		QuotaReserveTokens:  cfg.QuotaReserveTokens,
 		Source:              source,
+		WidgetFrameOrigins:  cfg.WidgetFrameOrigins,
 	}, st, prov, quota.Static{UserTokens: cfg.QuotaUserTokens, OrgTokens: cfg.QuotaOrgTokens}, logger) // entitlements replace Static with #31
 
 	// AI settings (#39): identity checks the membership and gives the plan.
