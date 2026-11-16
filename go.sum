@@ -7,12 +7,8 @@ github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c/go.mod h1:xomTg6
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
-github.com/VelimirMueller/synthwerk-contracts/go v0.8.0 h1:45L5tVMLRgVOFarxDEJCQv4n9VkdKgm0qpMTQJ7gwIw=
-github.com/VelimirMueller/synthwerk-contracts/go v0.8.0/go.mod h1:lykpq0Rjc2V1AQr7vvy/H0NQdbAO9+f0jGXEG73zeCQ=
-github.com/VelimirMueller/synthwerk-contracts/go v0.12.1-0.20261116102746-85e1778d2380 h1:6x7PIVOaCJ87bgv9tXSwxS09fuh5K5l1iFQPNU8PEd8=
-github.com/VelimirMueller/synthwerk-contracts/go v0.12.1-0.20261116102746-85e1778d2380/go.mod h1:lykpq0Rjc2V1AQr7vvy/H0NQdbAO9+f0jGXEG73zeCQ=
-github.com/VelimirMueller/synthwerk-contracts/go v0.12.1-0.20261116102925-070611738cd9 h1:EFQ9xdEYFPLJBCuFSOQASH7a2hKKcyuLU9f+djsOXfI=
-github.com/VelimirMueller/synthwerk-contracts/go v0.12.1-0.20261116102925-070611738cd9/go.mod h1:lykpq0Rjc2V1AQr7vvy/H0NQdbAO9+f0jGXEG73zeCQ=
+github.com/VelimirMueller/synthwerk-contracts/go v0.13.0 h1:25so5h4mmEy0a8WNl9j8y87ex1Ih6D548PqQ2vtEvNY=
+github.com/VelimirMueller/synthwerk-contracts/go v0.13.0/go.mod h1:lykpq0Rjc2V1AQr7vvy/H0NQdbAO9+f0jGXEG73zeCQ=
 github.com/apapsch/go-jsonmerge/v2 v2.0.0 h1:axGnT1gRIfimI7gJifB699GoE/oq+F2MU7Dml6nw9rQ=
 github.com/apapsch/go-jsonmerge/v2 v2.0.0/go.mod h1:lvDnEdqiQrp0O42VQGgmlKpxL1AP2+08jFMw88y4klk=
 github.com/bmatcuk/doublestar v1.1.1/go.mod h1:UD6OnuiIn0yFxxA2le/rnRU1G4RaI4UvFv1sNto9p6w=
