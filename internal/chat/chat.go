@@ -38,6 +38,8 @@ const dataSchema = "https://schemas.synthwerk.dev/events/llm/message.completed.v
 type Store interface {
 	CreateConversation(ctx context.Context, o store.Owner, alias string) (store.Conversation, error)
 	GetConversation(ctx context.Context, o store.Owner, id string) (store.Conversation, error)
+	// ListConversations returns a page of the owner's conversations, newest first (#54).
+	ListConversations(ctx context.Context, o store.Owner, before string, limit int) ([]store.Summary, bool, error)
 	ConversationAlias(ctx context.Context, o store.Owner, id string) (string, error)
 	StartTurn(ctx context.Context, o store.Owner, convID, text string, q store.Quota) (store.Turn, error)
 	Finish(ctx context.Context, o store.Owner, f store.Final, ev cloudevents.Event) error
@@ -140,7 +142,9 @@ func (h *Handler) applied(ctx context.Context, o store.Owner) (settings.Applied,
 }
 
 // acquireStream takes one stream slot of the owner. ok false: the owner is at the max.
-func (h *Handler) acquireStream(o store.Owner) (release func(), ok bool) {
+// The slots count per org and user, over every origin of a widget (#54).
+func (h *Handler) acquireStream(full store.Owner) (release func(), ok bool) {
+	o := store.Owner{Tenant: full.Tenant, User: full.User}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.open[o] >= h.cfg.MaxStreamsPerOwner {

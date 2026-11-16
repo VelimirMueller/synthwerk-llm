@@ -50,6 +50,10 @@ func (m *memStore) GetConversation(context.Context, store.Owner, string) (store.
 	m.chat()
 	return store.Conversation{}, nil
 }
+func (m *memStore) ListConversations(context.Context, store.Owner, string, int) ([]store.Summary, bool, error) {
+	m.chat()
+	return nil, false, nil
+}
 func (m *memStore) ConversationAlias(context.Context, store.Owner, string) (string, error) {
 	m.chat()
 	return "", nil

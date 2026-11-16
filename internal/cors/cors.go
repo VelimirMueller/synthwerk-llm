@@ -219,24 +219,25 @@ func (p *Policy) Wrap(next http.Handler) http.Handler {
 	})
 }
 
-// Preflight answers the CORS preflight of a route with method. It needs no token.
-// 204 with the CORS headers for one allowed Origin and Access-Control-Request-Method
-// equal to method; else 403 without CORS headers. Both send Vary: Origin and
+// Preflight answers the CORS preflight of a route with methods. It needs no token.
+// 204 with the CORS headers for one allowed Origin and one Access-Control-Request-Method
+// in methods (Access-Control-Allow-Methods names that one method); else 403 without
+// CORS headers. Both send Vary: Origin and
 // Cache-Control: no-store. No Access-Control-Allow-Credentials: the widget sends a
 // Bearer token, never a cookie.
-func (p *Policy) Preflight(method string) http.Handler {
+func (p *Policy) Preflight(methods ...string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Add("Vary", "Origin")
 		h.Set("Cache-Control", "no-store")
 		origin, ok := singleOrigin(r)
 		requested := r.Header.Values("Access-Control-Request-Method")
-		if !ok || len(requested) != 1 || requested[0] != method || !p.Allowed(r.Context(), origin) {
+		if !ok || len(requested) != 1 || !slices.Contains(methods, requested[0]) || !p.Allowed(r.Context(), origin) {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
 		h.Set("Access-Control-Allow-Origin", origin)
-		h.Set("Access-Control-Allow-Methods", method)
+		h.Set("Access-Control-Allow-Methods", requested[0])
 		h.Set("Access-Control-Allow-Headers", AllowHeaders)
 		h.Set("Access-Control-Max-Age", MaxAge)
 		w.WriteHeader(http.StatusNoContent)

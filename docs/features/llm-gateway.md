@@ -5,24 +5,25 @@ status: beta
 epic: E3
 owner: llm
 paths: ["internal/**", "cmd/**", "migrations/**"]
-api: ["POST /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/messages", "OPTIONS /v1/conversations", "OPTIONS /v1/conversations/{id}", "OPTIONS /v1/conversations/{id}/messages", "GET /v1/me/export", "GET /v1/ai-settings", "PUT /v1/ai-settings"]
+api: ["GET /v1/conversations", "POST /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/messages", "OPTIONS /v1/conversations", "OPTIONS /v1/conversations/{id}", "OPTIONS /v1/conversations/{id}/messages", "GET /v1/me/export", "GET /v1/ai-settings", "PUT /v1/ai-settings"]
 events: ["dev.synthwerk.llm.message.completed.v1", "dev.synthwerk.llm.ai_settings.changed.v1"]
 mcp: []
-updated: 2026-10-30
+updated: 2026-11-16
 ---
 
-# LLM gateway (chat slice, M2 #32; quotas #33; own data #41; AI settings #39; widget tokens #30; widget CORS infra#21; fallback provider #56)
+# LLM gateway (chat slice, M2 #32; quotas #33; own data #41; AI settings #39; widget tokens #30; widget CORS infra#21; fallback provider #56; past conversations #54)
 
 > - A signed-in user creates a conversation, sends a message and gets the answer token by token as Server-Sent Events.
 > - The model comes from `SYNTHWERK_LLM_PROVIDER` (`ollama`, `openai_compat`, `fake`). An operator can add fallback providers per alias (`SYNTHWERK_LLM_FALLBACKS`, #56). The gateway falls over only before the first token, and never to a non-EU provider without `SYNTHWERK_LLM_ALLOW_NON_EU=true`.
 > - A request without a valid user token gets 401 before any database or model call.
 > - Two token issuers: Zitadel (user tokens) and synthwerk-identity (widget tokens, #30). A widget token works only on create, read and send, only from its `synthwerk:origin`. Export and AI settings refuse it (403).
 > - A conversation belongs to one user in one org. Postgres row level security enforces it.
+> - A signed-in user lists the own past conversations with `GET /v1/conversations`, newest first (#54). A widget token sees only the conversations of its own `synthwerk:origin`.
 > - Logs, spans and events hold metadata only. Never the prompt, never the answer.
 > - Every finished answer emits `dev.synthwerk.llm.message.completed.v1` on the stream `EVT_LLM` (kit outbox).
 > - Tokens count per user and per org in a UTC day. Over quota: 429 `quota_exhausted` with the scope and the reset, no model call.
 > - A user exports the own rows of every org with `GET /v1/me/export`. When identity emits `dev.synthwerk.identity.user.deleted.v1`, llm deletes them.
-> - llm answers CORS for the three widget chat routes. Allowed: the static list `SYNTHWERK_LLM_CORS_ORIGINS`, or an origin that an app lists in identity (infra#21).
+> - llm answers CORS for the four widget chat routes (list, create, read, send). Allowed: the static list `SYNTHWERK_LLM_CORS_ORIGINS`, or an origin that an app lists in identity (infra#21).
 > - An owner or admin sets the AI settings of the org with `/v1/ai-settings`: model choice, system prompt, input limit, token cap per user, temperature. Every create and send of the org uses them. They stay inside the service aliases and the org's plan (#39).
 
 ## API
@@ -31,6 +32,7 @@ Contract: `synthwerk-contracts/openapi/llm/openapi.yaml`. All routes need `Autho
 
 | Method | Path | Result |
 |---|---|---|
+| GET | `/v1/conversations` | 200 `ConversationPage`: own conversations of the token org, newest first. `limit` 1-50 (default 20), `cursor`. See [Past conversations](#past-conversations-54). |
 | POST | `/v1/conversations` | 201, empty conversation. Body `{"model":"<alias>"}` is optional. |
 | GET | `/v1/conversations/{id}` | 200 with messages, oldest first. Another owner's id: 404, same body as an unknown id. |
 | POST | `/v1/conversations/{id}/messages` | 200 `text/event-stream`: `delta`… `usage` `done`, or `error`. |
@@ -49,11 +51,24 @@ Refusal order of a send. The model call is last:
 
 After the first byte the status stays 200; a failure is an `error` event. A client that closes the stream cancels the model call. The partial answer is stored with status `canceled`.
 
+## Past conversations (#54)
+
+- `GET /v1/conversations` lists the conversations of the token org and `sub`. Order: id descending (UUIDv7 = creation time). A new message does not move a conversation.
+- Only conversations with a user message and without `deleted_at` appear. An empty conversation does not appear.
+- `title` = the first user message, white space joined, at most 80 characters (`store.Title`). The query reads at most 320 characters of it.
+- Paging: `limit` 1 to 50, default 20. `next_cursor` = base64url (no padding) of the last id; absent on the last page. A bad `limit` or `cursor` gets 400 before any database call.
+- Origin binding: migration `0006_conversation_origin.sql` adds `llm.conversation.origin`. A widget token stores its `synthwerk:origin`; a user token stores `''`.
+- A widget token (Owner.Origin set) lists, reads and sends only on conversations of its own origin. Another origin, or a conversation of a user token, is not listed and gets 404 on read and send, before any model call.
+- A user token sees every own conversation of the org, from every origin.
+- Stream slots still count per org and `sub`, over all origins.
+- Account delete: the `user.deleted.v1` erase removes the conversations, so the list is empty after it. An org delete comes in the same event (`deleted_orgs`).
+- The list is a widget route: llm answers its CORS. `OPTIONS /v1/conversations` serves both `GET` and `POST`.
+
 ## Widget tokens (#30)
 
 - Identity signs them: ES256, `typ` `at+jwt`, key set at identity `/.well-known/jwks.json`, at most 15 min, `client_id` = app id, `synthwerk:origin`, no roles.
 - llm trusts them only with `SYNTHWERK_LLM_WIDGET_ISSUER`. Unset: widget tokens get 401.
-- Routes: `POST /v1/conversations`, `GET /v1/conversations/{id}`, `POST /v1/conversations/{id}/messages`. `GET /v1/me/export` and `/v1/ai-settings` answer 403 to every token of the widget issuer and to every token with `synthwerk:origin`.
+- Routes: `GET /v1/conversations`, `POST /v1/conversations`, `GET /v1/conversations/{id}`, `POST /v1/conversations/{id}/messages`. `GET /v1/me/export` and `/v1/ai-settings` answer 403 to every token of the widget issuer and to every token with `synthwerk:origin`.
 - Owner = token org and `sub`, as for a user token: the AI settings and the org quota of the token org apply; the user quota key is the `sub`. A user token of the same `sub` and org shares the conversations and the quota row.
 
 ## CORS of the widget chat routes (infra#21)
@@ -212,6 +227,9 @@ Fallback chain (#56): `REGION` of the primary (`eu` or `non_eu`; default `eu` fo
 - `tests/unit/chat/cors_test.go` — `Preflight POST /v1/conversations - customer origin listed in identity, no token - 204`; `Create - no token, listed origin - 401 the widget can read`; `Send - widget token, listed origin - SSE with CORS headers, pieces arrive one by one`; `Preflight /v1/me/export - not a widget route - no CORS from llm`.
 - `tests/unit/identity/widgetorigins_test.go` — `WidgetOriginListed - identity answers 204 - yes; path, escaped origin, no token`; 404 → no; other status, unreachable → `ErrUnavailable`.
 - `tests/integration/chat/cors_test.go` — `Preflight, Create, Send - listed customer origin - 204, 201, SSE, all with the origin allowed`.
+- `tests/unit/chat/list_test.go` (#54) — `Title - <shape>`; `List - <bad limit or cursor> - 400 invalid_request`; `List - no token - 401`; `List - widget token, Origin header of another site - 403`.
+- `tests/integration/chat/list_test.go` (#54) — `List - two users and the same sub in another org - each sees only the own conversations of the token org, newest first, paged; empty and deleted ones are left out; a second user cannot open the first user's conversation`; `List, Get, Send - widget token of origin A - never sees a conversation made on origin B or with a user token; the user token sees every origin`.
+- `tests/integration/erasure` — `EraseUser` also leaves an empty past conversations list in every org (#54).
 - `tests/contract/provider` — conformance of `fake` and `openaicompat`.
 - `tests/unit/chain` (#56) — `Chat - primary fails before the first token (503, 429, unavailable, broken stream) - the next link answers, in order, with its own model`; `Chat - fails after the first token - no fallback`; `Chat - 400 - no fallback, circuit unchanged`; `Chat - no first token in time - next link; the last link waits`; `Chat - client abort - no fallback`; `Chat - alias the fallback does not serve - primary only`; `Breaker - open skips, half-open lets one probe, success closes, failed probe opens again, last link always tried`; `New - non-EU link without the opt-in - refused`. Over HTTP with `openaicompat`: connection refused, 503, 429, headers without a token → the fallback's answer and usage; connection drop after the first token → no fallback; all down → last error.
 - `tests/integration/chat/fallback_test.go` (#56) — `Send - primary blocked (503) - the fallback streams; event, logs and quota name it`; `Send - fails after the first token - error event, no fallback`; `Send - every provider down - 503, nothing charged`.
@@ -219,7 +237,7 @@ Fallback chain (#56): `REGION` of the primary (`eu` or `non_eu`; default `eu` fo
 
 ## Not in this slice
 
-Entitlement-based limits (#31, the `quota.Source` seam is ready), a `GET` of the quota state for the widget, deletion of old `quota_usage` rows, deletion of the user's `actor` in old outbox rows and in published `EVT_LLM` facts (retention 30 days), Anthropic adapter (E4), `GET /v1/models`, list/delete/resume of conversations, a second DB role for migrations, scope checks (claim names wait for #28).
+Entitlement-based limits (#31, the `quota.Source` seam is ready), a `GET` of the quota state for the widget, deletion of old `quota_usage` rows, deletion of the user's `actor` in old outbox rows and in published `EVT_LLM` facts (retention 30 days), Anthropic adapter (E4), `GET /v1/models`, delete of conversations, a second DB role for migrations, scope checks (claim names wait for #28).
 
 ## Changes
 
@@ -231,3 +249,4 @@ Entitlement-based limits (#31, the `quota.Source` seam is ready), a `GET` of the
 | 2026-10-30 | CORS of the widget chat routes in llm (infra#21): `SYNTHWERK_LLM_CORS_ORIGINS`, identity lookup `GET /internal/v1/widget-origins`, `OPTIONS` without token. Frontmatter for the feature-doc check. |
 | 2026-10-30 | CORS origin lookups: at most 8 in flight, a busy slot denies at once without a call (security review, infra#24). |
 | 2026-10-30 | Fallback provider (synthwerk#56): ordered chain per alias, fall-over before the first token only, circuit breaker per provider, `eu`/`non_eu` region with `ALLOW_NON_EU` opt-in, metrics and logs per provider and reason. New env: `REGION`, `FALLBACKS`, `FALLBACK_<NAME>_*`, `ALLOW_NON_EU`, `FIRST_TOKEN_TIMEOUT`, `BREAKER_FAILURES`, `BREAKER_OPEN`. |
+| 2026-11-16 | Past conversations (synthwerk#54): `GET /v1/conversations` with cursor paging, migration `0006_conversation_origin.sql`, widget tokens bound to their `synthwerk:origin` on list, read and send. `OPTIONS /v1/conversations` serves `GET` and `POST`. Contracts `go` at the #54 commit (contracts PR #42); bump to the tag once released. |
